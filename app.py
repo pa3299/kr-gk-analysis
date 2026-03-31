@@ -8,6 +8,22 @@ import base64
 import requests
 import json
 
+# --- HEX COLOR INTERPOLATION FOR PASS GRADIENTS ---
+def hex_to_rgb(hex_color):
+    hex_color = hex_color.lstrip('#')
+    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+def rgb_to_hex(rgb):
+    return '#{:02x}{:02x}{:02x}'.format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+
+def interpolate_color(color1, color2, factor):
+    rgb1 = hex_to_rgb(color1)
+    rgb2 = hex_to_rgb(color2)
+    r = rgb1[0] + (rgb2[0] - rgb1[0]) * factor
+    g = rgb1[1] + (rgb2[1] - rgb1[1]) * factor
+    b = rgb1[2] + (rgb2[2] - rgb1[2]) * factor
+    return rgb_to_hex((r, g, b))
+
 # --- AIRTABLE CONFIGURATION FOR COACH'S NOTES ---
 AIRTABLE_PAT = "patD9lKcJsQx1jFOr.2af8f66fc3d81c720038945e682e1981af6966a428ae399a70a6c9d53a2ac006"
 AIRTABLE_BASE_ID = "app5rwHaVPKXC5S7S"
@@ -117,6 +133,35 @@ def load_data():
     
     if 'Venue' not in matches_df.columns:
         matches_df['Venue'] = 'Home'
+        
+    # --- AUTOMATED TACTICAL CLASSIFICATION RULES ENGINE ---
+    def categorize_pass(row):
+        if str(row.get('Action_Category')) != 'Pass': 
+            return row.get('Tactical_Bucket')
+            
+        x = pd.to_numeric(row.get('Pass_End_X'), errors='coerce')
+        y = pd.to_numeric(row.get('Pass_End_Y'), errors='coerce')
+        height = str(row.get('Pass_Height', 'Unknown'))
+        
+        if pd.isna(x) or pd.isna(y): 
+            return row.get('Tactical_Bucket', 'Uncategorized')
+            
+        if x > 80: 
+            return 'Play Beyond'
+        elif (y < 18 or y > 62) and x > 18: 
+            return 'Play Around'
+        elif 60 <= x <= 80: 
+            # NEW RULE: Checks if it went over the opposition players
+            if 'High' in height:
+                return 'Play Into'
+            else:
+                return 'Play Through'
+        elif 25 <= x < 60: 
+            return 'Play Through'
+        else: 
+            return 'Short / Retain'
+            
+    actions_df['Tactical_Bucket'] = actions_df.apply(categorize_pass, axis=1)
     
     return matches_df, actions_df
 
@@ -275,10 +320,14 @@ if report_mode == "Single Match":
 
     shot_pitch, shot_video = st.columns([2.5, 1.5]) 
     with shot_pitch:
+        # Improved click detection logic to extract customdata
         selected_shot_idx = None
         if "shot_chart" in st.session_state:
             points = st.session_state.shot_chart.get("selection", {}).get("points", [])
-            if points: selected_shot_idx = points[0].get("curve_number")
+            if points: 
+                cd = points[0].get("customdata")
+                if isinstance(cd, list) and len(cd) > 0: selected_shot_idx = cd[0]
+                elif cd is not None: selected_shot_idx = cd
 
         fig_shots = go.Figure()
         fig_shots.add_shape(type="rect", x0=0, y0=0, x1=60, y1=80, line=dict(color="white", width=2))
@@ -321,7 +370,7 @@ if report_mode == "Single Match":
                 end_x = 120 - end_x
                 end_y = 80 - end_y
 
-            fig_shots.add_trace(go.Scatter(x=[start_x, end_x], y=[start_y, end_y], mode='lines+markers', line=dict(color=line_color, width=line_width), marker=dict(size=6, color=line_color), opacity=opacity, hoverinfo='text', hovertext=hover_text, showlegend=False))
+            fig_shots.add_trace(go.Scatter(x=[start_x, end_x], y=[start_y, end_y], mode='lines+markers', line=dict(color=line_color, width=line_width), marker=dict(size=6, color=line_color), opacity=opacity, hoverinfo='text', hovertext=[hover_text, hover_text], customdata=[i, i], showlegend=False))
             
             if start_x != end_x or start_y != end_y:
                 fig_shots.add_annotation(x=end_x, y=end_y, ax=start_x, ay=start_y, xref='x', yref='y', axref='x', ayref='y', showarrow=True, arrowhead=2, arrowsize=0.6, arrowwidth=line_width, arrowcolor=line_color, opacity=opacity)
@@ -460,10 +509,31 @@ if report_mode == "Single Match":
 
     pass_pitch, pass_video = st.columns([2.5, 1.5]) 
     with pass_pitch:
+        # Extracted customdata logically for multi-trace passes
         selected_pass_idx = None
         if "pitch_chart" in st.session_state:
             points = st.session_state.pitch_chart.get("selection", {}).get("points", [])
-            if points: selected_pass_idx = points[0].get("curve_number")
+            if points: 
+                cd = points[0].get("customdata")
+                if isinstance(cd, list) and len(cd) > 0: selected_pass_idx = cd[0]
+                elif cd is not None: selected_pass_idx = cd
+        
+        # --- NEW LEGEND FOR GRADIENTS ---
+        st.markdown("""
+        <div style='background-color: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 15px;'>
+            <div style='font-size: 0.85rem; color: #ccc; margin-bottom: 10px;'><b>Tactical Height Logic:</b> Categorization is based on pitch zone and pass height labels. <b>Play Into</b> requires a lofted/high ball over the defense.</div>
+            <div style='display: flex; flex-wrap: wrap; gap: 15px; font-size: 0.85rem;'>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #00FF00;'></span> Complete (Base)</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FF3333;'></span> Incomplete (Base)</div>
+                <div style='border-left: 1px solid #555; height: 16px; margin: 0 5px;'></div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #0066FF;'></span> Play Through (Driven)</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #B0008E;'></span> Play Into (Lofted)</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FFEA00;'></span> Play Around</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FF5500;'></span> Play Beyond</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FFFFFF;'></span> Short/Retain</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         fig_passes = go.Figure()
         fig_passes.add_shape(type="rect", x0=0, y0=0, x1=120, y1=80, line=dict(color="white", width=2))
@@ -474,17 +544,56 @@ if report_mode == "Single Match":
         fig_passes.add_shape(type="rect", x0=102, y0=18, x1=120, y1=62, line=dict(color="white", width=2))
         fig_passes.add_shape(type="rect", x0=114, y0=30, x1=120, y1=50, line=dict(color="white", width=2))
 
+        def get_intent_color(bucket):
+            if bucket == 'Play Through': return '#0066FF'
+            if bucket == 'Play Around': return '#FFEA00'
+            if bucket == 'Play Into': return '#B0008E'
+            if bucket == 'Play Beyond': return '#FF5500'
+            if bucket == 'Short / Retain': return '#FFFFFF'
+            return '#FFFFFF'
+
         for i, row in valid_passes.iterrows():
             is_active = (selected_pass_idx == i)
-            base_color = 'yellow' if row['Outcome'] == 'Complete' else 'red'
-            if is_active: line_color, line_width, opacity = '#00BFFF', 5, 1.0          
-            else: line_color = base_color; line_width = 3; opacity = 0.3 if selected_pass_idx is not None else 1.0
+            base_color = '#00FF00' if row['Outcome'] == 'Complete' else '#FF3333'
+            tip_color = get_intent_color(row['Tactical_Bucket'])
+            
+            if is_active: line_width, opacity = 5, 1.0          
+            else: line_width, opacity = 3, (0.3 if selected_pass_idx is not None else 1.0)
 
             raw_notes = row.get('Scout_Analysis', '')
             wrapped_notes = "<br>".join(textwrap.wrap(str(raw_notes) if pd.notna(raw_notes) else "No notes.", width=50))
-            hover_text = f"<b>Minute: {row.get('Match_Minute')}</b><br>Category: {row.get('Tactical_Bucket')}<br>Outcome: {row.get('Outcome')}<br>---<br><i>{wrapped_notes}</i>"
+            hover_text = f"<b>Minute: {row.get('Match_Minute')}</b><br>Intent: {row.get('Tactical_Bucket')}<br>Height: {row.get('Pass_Height', 'Unknown')}<br>Outcome: {row.get('Outcome')}<br>---<br><i>{wrapped_notes}</i>"
 
-            fig_passes.add_trace(go.Scatter(x=[row['Pass_Start_X'], row['Pass_End_X']], y=[row['Pass_Start_Y'], row['Pass_End_Y']], mode='lines+markers', line=dict(color=line_color, width=line_width), marker=dict(size=6, color=line_color), opacity=opacity, hoverinfo='text', hovertext=hover_text, showlegend=False))
+            x0 = pd.to_numeric(row.get('Pass_Start_X'), errors='coerce')
+            y0 = pd.to_numeric(row.get('Pass_Start_Y'), errors='coerce')
+            x1 = pd.to_numeric(row.get('Pass_End_X'), errors='coerce')
+            y1 = pd.to_numeric(row.get('Pass_End_Y'), errors='coerce')
+
+            if pd.isna(x0) or pd.isna(y0) or pd.isna(x1) or pd.isna(y1): continue
+
+            # Draw the pass gradient by mapping tiny segments
+            num_segments = 15
+            for step in range(num_segments):
+                f0 = step / num_segments
+                f1 = (step + 1) / num_segments
+                seg_x = [x0 + (x1 - x0) * f0, x0 + (x1 - x0) * f1]
+                seg_y = [y0 + (y1 - y0) * f0, y0 + (y1 - y0) * f1]
+                color = interpolate_color(base_color, tip_color, f0)
+                
+                fig_passes.add_trace(go.Scatter(
+                    x=seg_x, y=seg_y, mode='lines',
+                    line=dict(color=color, width=line_width),
+                    customdata=[i, i], hoverinfo='text', hovertext=[hover_text, hover_text],
+                    showlegend=False, opacity=opacity
+                ))
+
+            # Cap the pass with a crisp marker at the tip representing the Tactical zone
+            fig_passes.add_trace(go.Scatter(
+                x=[x1], y=[y1], mode='markers',
+                marker=dict(size=8, color=tip_color, line=dict(color='white', width=1)),
+                customdata=[i], hoverinfo='text', hovertext=[hover_text],
+                showlegend=False, opacity=opacity
+            ))
 
         fig_passes.update_layout(xaxis=dict(range=[-5, 125], showgrid=False, zeroline=False, visible=False), yaxis=dict(range=[85, -5], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
         st.plotly_chart(fig_passes, width="stretch", on_select="rerun", selection_mode="points", key="pitch_chart")
@@ -517,7 +626,7 @@ if report_mode == "Single Match":
     with chart_col1:
         if not valid_passes.empty:
             tactical_df = valid_passes.groupby(['Tactical_Bucket', 'Outcome']).size().reset_index(name='Count')
-            fig_bar = px.bar(tactical_df, x='Tactical_Bucket', y='Count', color='Outcome', title="Passes by Tactical Intent", color_discrete_map={'Complete': 'yellow', 'Incomplete': 'red'}, template="plotly_dark")
+            fig_bar = px.bar(tactical_df, x='Tactical_Bucket', y='Count', color='Outcome', title="Passes by Tactical Intent", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark")
             st.plotly_chart(fig_bar, width="stretch")
     with chart_col2:
         if not match_all_actions.empty:

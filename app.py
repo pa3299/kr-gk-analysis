@@ -163,6 +163,15 @@ def load_data():
             
     actions_df['Tactical_Bucket'] = actions_df.apply(categorize_pass, axis=1)
     
+    # NEW FIX: Safely initialize columns if they don't exist yet in the CSV
+    if 'Under_Pressure' not in actions_df.columns:
+        actions_df['Under_Pressure'] = 0
+    actions_df['Under_Pressure'] = pd.to_numeric(actions_df['Under_Pressure'], errors='coerce').fillna(0)
+    
+    if 'Play_Pattern' not in actions_df.columns:
+        actions_df['Play_Pattern'] = 'Unknown'
+    actions_df['Play_Pattern'] = actions_df['Play_Pattern'].astype(str)
+    
     return matches_df, actions_df
 
 matches_df, actions_df = load_data()
@@ -269,6 +278,13 @@ if report_mode == "Single Match":
     valid_shots = match_shots.dropna(subset=['Pass_Start_X', 'Pass_Start_Y']).copy()
     valid_shots.reset_index(drop=True, inplace=True)
 
+    # Filter defensive actions (Clearances, Claims, Punches, Sweeper, Interceptions)
+    def_actions = match_all_actions[
+        match_all_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Smother|Sweeper|Interception', case=False, na=False) | 
+        match_all_actions['Action_Category'].isin(['Clearance', 'Interception'])
+    ].dropna(subset=['Pass_Start_X', 'Pass_Start_Y']).copy()
+    def_actions.reset_index(drop=True, inplace=True)
+
     csv_data = match_all_actions.to_csv(index=False).encode('utf-8')
     st.sidebar.download_button(label="📥 Download Match Data (CSV)", data=csv_data, file_name=f"Match_{selected_match}_Data.csv", mime="text/csv")
 
@@ -320,7 +336,6 @@ if report_mode == "Single Match":
 
     shot_pitch, shot_video = st.columns([2.5, 1.5]) 
     with shot_pitch:
-        # Improved click detection logic to extract customdata
         selected_shot_idx = None
         if "shot_chart" in st.session_state:
             points = st.session_state.shot_chart.get("selection", {}).get("points", [])
@@ -494,10 +509,87 @@ if report_mode == "Single Match":
         else:
             st.info("👆 Click on any shot line to load the video.")
 
+    # --- SWEEPER KEEPER MAP (Left-Aligned) ---
     st.markdown("---")
+    st.markdown("## 🧹 Box Control & Sweeping")
+    swp_kpi1, swp_kpi2, swp_kpi3 = st.columns(3)
+    swp_kpi1.metric("Total Defensive Actions", len(def_actions))
+    swp_kpi2.metric("High Claims", len(def_actions[def_actions['Outcome'].astype(str).str.contains('Claim', case=False, na=False)]))
+    swp_kpi3.metric("Sweeping / Clearances", len(def_actions[def_actions['Outcome'].astype(str).str.contains('Clearance|Sweeper', case=False, na=False)]))
+    
+    swp_pitch, swp_info = st.columns([2.5, 1.5])
+    with swp_pitch:
+        selected_swp_idx = None
+        if "swp_chart" in st.session_state:
+            points = st.session_state.swp_chart.get("selection", {}).get("points", [])
+            if points: 
+                cd = points[0].get("customdata")
+                if isinstance(cd, list) and len(cd) > 0: selected_swp_idx = cd[0]
+                elif cd is not None: selected_swp_idx = cd
+
+        fig_sweeper = go.Figure()
+        fig_sweeper.add_shape(type="rect", x0=0, y0=0, x1=60, y1=80, line=dict(color="white", width=2))
+        fig_sweeper.add_shape(type="rect", x0=0, y0=18, x1=18, y1=62, line=dict(color="white", width=2))
+        fig_sweeper.add_shape(type="rect", x0=0, y0=30, x1=6, y1=50, line=dict(color="white", width=2))
+        fig_sweeper.add_shape(type="circle", x0=50, y0=30, x1=70, y1=50, line=dict(color="white", width=2))
+        
+        for i, row in def_actions.iterrows():
+            is_active = (selected_swp_idx == i)
+            sx, sy = row.get('Pass_Start_X', 0), row.get('Pass_Start_Y', 0)
+            
+            # Normalize mapping to the defensive half
+            if sx > 60: 
+                sx, sy = 120 - sx, 80 - sy 
+                
+            outcome = str(row.get('Outcome', 'Unknown'))
+            if 'Clearance' in outcome: base_color = '#FFEA00'
+            elif 'Claim' in outcome: base_color = '#B0008E'
+            elif 'Interception' in outcome: base_color = '#FF5500'
+            else: base_color = '#00BFFF'
+            
+            size = 18 if is_active else 12
+            opacity = 1.0 if not selected_swp_idx or is_active else 0.3
+            
+            hover = f"Minute: {row.get('Match_Minute')}<br>Action: {outcome}"
+            fig_sweeper.add_trace(go.Scatter(
+                x=[sx], y=[sy], mode='markers', 
+                marker=dict(size=size, color=base_color, line=dict(color='white', width=1)), 
+                opacity=opacity, hoverinfo='text', hovertext=hover, customdata=[i], showlegend=False
+            ))
+            
+        fig_sweeper.update_layout(xaxis=dict(range=[-5, 55], visible=False), yaxis=dict(range=[85, -5], visible=False, scaleanchor="x"), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
+        st.plotly_chart(fig_sweeper, width="stretch", on_select="rerun", selection_mode="points", key="swp_chart")
+
+    with swp_info:
+        st.markdown("### Action Context")
+        if selected_swp_idx is not None and selected_swp_idx < len(def_actions):
+            if st.button("🔙 Clear Selection", key="clear_swp"):
+                st.session_state.swp_chart = {"selection": {"points": []}}; st.rerun()
+
+            sel_swp = def_actions.iloc[selected_swp_idx]
+            st.metric("Action Type", sel_swp.get('Outcome', 'Unknown'))
+            st.metric("Match Minute", f"{sel_swp.get('Match_Minute', 'N/A')}'")
+            
+            vid_url = sel_swp.get("Video_URL")
+            if pd.notna(vid_url) and str(vid_url).strip() != "": st.video(str(vid_url).strip())
+            else: st.warning("No Video URL logged for this action.")
+            
+            with st.container(height=150, border=True):
+                notes = sel_swp.get("Scout_Analysis", "")
+                if pd.notna(notes) and str(notes).strip() != "": st.write(notes)
+                else: st.info("No detailed analysis for this action.")
+        else:
+            st.info("👆 Click on any defensive action on the pitch to see details.")
+
 
     # DISTRIBUTION & PASSING
+    st.markdown("---")
     st.markdown("## 👟 Distribution & Passing")
+    
+    # Process Contextual Logic
+    valid_passes['Is_Dead_Ball'] = valid_passes['Play_Pattern'].astype(str).str.contains('Goal Kick|Free Kick|Corner|Penalty', case=False)
+    valid_passes['Play_State'] = valid_passes['Is_Dead_Ball'].map({True: 'Dead Ball', False: 'Open Play'})
+    
     total_passes = len(valid_passes)
     completed_passes = len(valid_passes[valid_passes['Outcome'] == 'Complete'])
     pass_accuracy = (completed_passes / total_passes * 100) if total_passes > 0 else 0
@@ -509,7 +601,6 @@ if report_mode == "Single Match":
 
     pass_pitch, pass_video = st.columns([2.5, 1.5]) 
     with pass_pitch:
-        # Extracted customdata logically for multi-trace passes
         selected_pass_idx = None
         if "pitch_chart" in st.session_state:
             points = st.session_state.pitch_chart.get("selection", {}).get("points", [])
@@ -518,7 +609,6 @@ if report_mode == "Single Match":
                 if isinstance(cd, list) and len(cd) > 0: selected_pass_idx = cd[0]
                 elif cd is not None: selected_pass_idx = cd
         
-        # --- NEW LEGEND FOR GRADIENTS ---
         st.markdown("""
         <div style='background-color: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 15px;'>
             <div style='font-size: 0.85rem; color: #ccc; margin-bottom: 10px;'><b>Tactical Height Logic:</b> Categorization is based on pitch zone and pass height labels. <b>Play Into</b> requires a lofted/high ball over the defense.</div>
@@ -526,8 +616,8 @@ if report_mode == "Single Match":
                 <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #00FF00;'></span> Complete (Base)</div>
                 <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FF3333;'></span> Incomplete (Base)</div>
                 <div style='border-left: 1px solid #555; height: 16px; margin: 0 5px;'></div>
-                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #0066FF;'></span> Play Through (Driven)</div>
-                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #B0008E;'></span> Play Into (Lofted)</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #0066FF;'></span> Play Through</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #B0008E;'></span> Play Into</div>
                 <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FFEA00;'></span> Play Around</div>
                 <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FF5500;'></span> Play Beyond</div>
                 <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FFFFFF;'></span> Short/Retain</div>
@@ -560,9 +650,9 @@ if report_mode == "Single Match":
             if is_active: line_width, opacity = 5, 1.0          
             else: line_width, opacity = 3, (0.3 if selected_pass_idx is not None else 1.0)
 
-            raw_notes = row.get('Scout_Analysis', '')
-            wrapped_notes = "<br>".join(textwrap.wrap(str(raw_notes) if pd.notna(raw_notes) else "No notes.", width=50))
-            hover_text = f"<b>Minute: {row.get('Match_Minute')}</b><br>Intent: {row.get('Tactical_Bucket')}<br>Height: {row.get('Pass_Height', 'Unknown')}<br>Outcome: {row.get('Outcome')}<br>---<br><i>{wrapped_notes}</i>"
+            # Enhanced Context Hover
+            pressure_txt = "Pressured" if row.get('Under_Pressure') == 1 else "Uncontested"
+            hover_text = f"<b>Minute: {row.get('Match_Minute')}</b><br>Intent: {row.get('Tactical_Bucket')}<br>Height: {row.get('Pass_Height', 'Unknown')}<br>Context: {row.get('Play_State')} ({pressure_txt})<br>Outcome: {row.get('Outcome')}"
 
             x0 = pd.to_numeric(row.get('Pass_Start_X'), errors='coerce')
             y0 = pd.to_numeric(row.get('Pass_Start_Y'), errors='coerce')
@@ -571,7 +661,6 @@ if report_mode == "Single Match":
 
             if pd.isna(x0) or pd.isna(y0) or pd.isna(x1) or pd.isna(y1): continue
 
-            # Draw the pass gradient by mapping tiny segments
             num_segments = 15
             for step in range(num_segments):
                 f0 = step / num_segments
@@ -587,7 +676,6 @@ if report_mode == "Single Match":
                     showlegend=False, opacity=opacity
                 ))
 
-            # Cap the pass with a crisp marker at the tip representing the Tactical zone
             fig_passes.add_trace(go.Scatter(
                 x=[x1], y=[y1], mode='markers',
                 marker=dict(size=8, color=tip_color, line=dict(color='white', width=1)),
@@ -604,41 +692,80 @@ if report_mode == "Single Match":
             col_dl4.download_button("Download Data (CSV)", data=valid_passes.to_csv(index=False).encode('utf-8'), file_name="Pass_Data.csv", mime="text/csv")
 
     with pass_video:
-        st.markdown("### Pass Video Clip")
+        st.markdown("### Pass Context")
         if selected_pass_idx is not None and selected_pass_idx < len(valid_passes):
             if st.button("🔙 Clear Pass Selection", key="clear_pass"):
-                st.session_state.pitch_chart = {"selection": {"points": [], "box": [], "lasso": []}}; st.rerun()
+                st.session_state.pitch_chart = {"selection": {"points": []}}; st.rerun()
 
-            selected_row = valid_passes.iloc[selected_pass_idx]
-            vid_url = selected_row.get("Video_URL")
+            sel_row = valid_passes.iloc[selected_pass_idx]
+            
+            st.metric("Play Phase", sel_row.get('Play_State', 'Unknown'))
+            st.metric("Under Pressure", "Yes" if sel_row.get('Under_Pressure') == 1 else "No")
+            
+            vid_url = sel_row.get("Video_URL")
             if pd.notna(vid_url) and str(vid_url).strip() != "": st.video(str(vid_url).strip())
             else: st.warning("No Video URL logged for this pass.")
-                
+            
             with st.container(height=150, border=True):
-                notes = selected_row.get("Scout_Analysis", "")
+                notes = sel_row.get("Scout_Analysis", "")
                 if pd.notna(notes) and str(notes).strip() != "": st.write(notes)
                 else: st.info("No detailed analysis for this pass.")
+                
         else:
-            st.info("👆 Click on any pass on the pitch to load its video.")
+            st.info("👆 Click on any pass on the pitch to load its context.")
 
-    st.markdown("### Distribution Analytics")
+    # --- RESTORED: DISTRIBUTION ANALYTICS AND RADAR CHART ---
+    st.markdown("### Distribution Analytics & Overall Involvement")
     chart_col1, chart_col2 = st.columns(2)
+    
     with chart_col1:
         if not valid_passes.empty:
             tactical_df = valid_passes.groupby(['Tactical_Bucket', 'Outcome']).size().reset_index(name='Count')
             fig_bar = px.bar(tactical_df, x='Tactical_Bucket', y='Count', color='Outcome', title="Passes by Tactical Intent", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark")
             st.plotly_chart(fig_bar, width="stretch")
+            
     with chart_col2:
         if not match_all_actions.empty:
             actions_df_counts = match_all_actions['Action_Category'].value_counts().reset_index()
             actions_df_counts.columns = ['Action', 'Count']
-            fig_pie = px.pie(actions_df_counts, names='Action', values='Count', title="Overall Goalkeeper Involvement", template="plotly_dark", hole=0.4)
-            st.plotly_chart(fig_pie, width="stretch")
+            
+            # Rename 'Pass' to 'Distribution' strictly for this visual
+            actions_df_counts['Action'] = actions_df_counts['Action'].replace({'Pass': 'Distribution'})
+            
+            # Find the maximum value to force dynamic scaling
+            max_val = actions_df_counts['Count'].max()
+            
+            fig_radar = px.line_polar(
+                actions_df_counts, r='Count', theta='Action', line_close=True,
+                title="Overall Goalkeeper Involvement Radar", template="plotly_dark",
+                color_discrete_sequence=['#00BFFF']
+            )
+            fig_radar.update_traces(fill='toself')
+            
+            # Force the scale to 10% higher than the max value so nothing gets cut off
+            fig_radar.update_layout(
+                polar=dict(
+                    radialaxis=dict(
+                        visible=True,
+                        range=[0, max_val * 1.1] 
+                    )
+                )
+            )
+            
+            st.plotly_chart(fig_radar, width="stretch")
 
-    with st.expander("📥 Download Chart Data"):
-        col_c1, col_c2 = st.columns(2)
-        if not valid_passes.empty: col_c1.download_button("Download Pass Types (CSV)", data=tactical_df.to_csv(index=False).encode('utf-8'), file_name="Tactical_Passes.csv", mime="text/csv")
-        if not match_all_actions.empty: col_c2.download_button("Download Action Split (CSV)", data=actions_df_counts.to_csv(index=False).encode('utf-8'), file_name="Action_Types.csv", mime="text/csv")
+    st.markdown("### Situational Breakdown")
+    c1, c2 = st.columns(2)
+    with c1:
+        if not valid_passes.empty:
+            pressure_df = valid_passes.groupby(['Under_Pressure', 'Outcome']).size().reset_index(name='Count')
+            pressure_df['Pressure Label'] = pressure_df['Under_Pressure'].map({1: 'Pressured', 0: 'Uncontested'})
+            st.plotly_chart(px.bar(pressure_df, x='Pressure Label', y='Count', color='Outcome', title="Accuracy Under Pressure", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
+    with c2:
+        if not valid_passes.empty:
+            phase_df = valid_passes.groupby(['Play_State', 'Outcome']).size().reset_index(name='Count')
+            st.plotly_chart(px.bar(phase_df, x='Play_State', y='Count', color='Outcome', title="Dead Ball vs Open Play", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
+
 
     st.markdown("---")
     st.markdown("## 📝 Overall Match Analysis")
@@ -968,7 +1095,11 @@ st.sidebar.markdown("""
 """, unsafe_allow_html=True)
 
 if report_mode == "Single Match":
-    html_export = generate_html_report([fig_shots, fig_passes, fig_bar, fig_pie] if 'fig_bar' in locals() else [fig_shots, fig_passes], f"{team_name} vs {opp_name} Report")
+    figs_to_export = []
+    for fig_name in ['fig_shots', 'fig_sweeper', 'fig_passes', 'fig_bar', 'fig_radar']:
+        if fig_name in locals():
+            figs_to_export.append(locals()[fig_name])
+    html_export = generate_html_report(figs_to_export, f"{team_name} vs {opp_name} Report")
     export_name = f"Match_Report_{selected_match}.html"
 else:
     html_export = generate_html_report([fig_trend, fig_bar, fig_pie] if 'fig_trend' in locals() else [fig_bar, fig_pie], report_title)

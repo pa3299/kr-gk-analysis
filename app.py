@@ -25,7 +25,7 @@ def interpolate_color(color1, color2, factor):
     return rgb_to_hex((r, g, b))
 
 # --- AIRTABLE CONFIGURATION FOR COACH'S NOTES ---
-AIRTABLE_PAT = "patD9lKcJsQx1jFOr.2af8f66fc3d81c720038945e682e1981af6966a428ae399a70a6c9d53a2ac006"
+AIRTABLE_PAT = st.secrets["AIRTABLE_PAT"]
 AIRTABLE_BASE_ID = "app5rwHaVPKXC5S7S"
 AIRTABLE_TABLE_NAME = "Coach_Notes"
 

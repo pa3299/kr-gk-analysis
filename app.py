@@ -30,9 +30,7 @@ AIRTABLE_BASE_ID = "app5rwHaVPKXC5S7S"
 AIRTABLE_TABLE_NAME = "Coach_Notes"
 
 def get_saved_notes():
-    """Fetches all existing notes from Airtable so they pre-fill in the dashboard."""
     if AIRTABLE_PAT.startswith("YOUR_"): return {} 
-    
     url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
     headers = {"Authorization": f"Bearer {AIRTABLE_PAT}"}
     try:
@@ -45,40 +43,20 @@ def get_saved_notes():
     return {}
 
 def save_note_to_airtable(note_id, report_type, period, notes):
-    """Upserts the typed note into Airtable and links to the match if applicable."""
     if AIRTABLE_PAT.startswith("YOUR_"):
         st.error("Please add your Airtable PAT and Base ID to the top of app.py to save notes!")
         return False
-        
     url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_PAT}",
-        "Content-Type": "application/json"
-    }
-    
-    fields = {
-        "Note_ID": note_id,
-        "Report_Type": report_type,
-        "Period": period,
-        "Notes": notes
-    }
-    
-    if report_type == "Single Match":
-        fields["Match_Link"] = [period] 
-        
-    payload = {
-        "performUpsert": {"fieldsToMergeOn": ["Note_ID"]},
-        "typecast": True,
-        "records": [{"fields": fields}]
-    }
-    
+    headers = {"Authorization": f"Bearer {AIRTABLE_PAT}", "Content-Type": "application/json"}
+    fields = {"Note_ID": note_id, "Report_Type": report_type, "Period": period, "Notes": notes}
+    if report_type == "Single Match": fields["Match_Link"] = [period] 
+    payload = {"performUpsert": {"fieldsToMergeOn": ["Note_ID"]}, "typecast": True, "records": [{"fields": fields}]}
     response = requests.patch(url, headers=headers, data=json.dumps(payload))
     return response.status_code == 200
 
 # 1. Page Configuration
 st.set_page_config(page_title="KR Reykjavik | GK Performance", layout="wide")
 
-# --- CSS FOR PERFECT PDF PRINTING & METRIC FIXES ---
 st.markdown("""
     <style>
     @media print {
@@ -100,7 +78,6 @@ st.markdown("""
 def check_password():
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
-
     if not st.session_state["authenticated"]:
         st.title("🔒 Secure Coaching Portal")
         password = st.text_input("Please enter the staff password to access performance reports:", type="password")
@@ -119,112 +96,118 @@ if "saved_notes" not in st.session_state:
     st.session_state["saved_notes"] = get_saved_notes()
 saved_notes = st.session_state["saved_notes"]
 
-# --- DATA LOADING & SETUP ---
+# --- DATA LOADING & SETUP (MATCHES & ACTIONS) ---
 def load_data():
-    matches_df = pd.read_csv('Matches.csv')
-    actions_df = pd.read_csv('GK_Actions.csv')
-    
-    matches_df['Date_Parsed'] = pd.to_datetime(matches_df['Date'], errors='coerce')
-    matches_df['Month_Year'] = matches_df['Date_Parsed'].dt.strftime('%B %Y')
-    matches_df['Season'] = matches_df['Date_Parsed'].dt.strftime('%Y')
-    
-    matches_df['Month_Year'] = matches_df['Month_Year'].fillna('Unknown Month')
-    matches_df['Season'] = matches_df['Season'].fillna('Unknown Season')
-    
-    if 'Venue' not in matches_df.columns:
-        matches_df['Venue'] = 'Home'
+    try:
+        matches_df = pd.read_csv('Matches.csv')
+        actions_df = pd.read_csv('GK_Actions.csv')
+    except FileNotFoundError:
+        # Fallback for when dummy data is removed
+        matches_df = pd.DataFrame(columns=['Match_ID', 'Date', 'Venue', 'Opponent', 'Team_GK', 'Team_Score', 'Opponent_Score', 'Match_Summary_Notes'])
+        actions_df = pd.DataFrame(columns=['Match_ID', 'Action_Category', 'Outcome', 'PSxG', 'Goal_Conceded', 'Pass_Start_X', 'Pass_Start_Y', 'Pass_End_X', 'Pass_End_Y', 'Under_Pressure', 'Play_Pattern', 'Match_Minute'])
         
-    # --- AUTOMATED TACTICAL CLASSIFICATION RULES ENGINE ---
-    def categorize_pass(row):
-        if str(row.get('Action_Category')) != 'Pass': 
-            return row.get('Tactical_Bucket')
+    if not matches_df.empty:
+        matches_df['Date_Parsed'] = pd.to_datetime(matches_df['Date'], errors='coerce')
+        matches_df['Month_Year'] = matches_df['Date_Parsed'].dt.strftime('%B %Y').fillna('Unknown Month')
+        matches_df['Season'] = matches_df['Date_Parsed'].dt.strftime('%Y').fillna('Unknown Season')
+        if 'Venue' not in matches_df.columns: matches_df['Venue'] = 'Home'
             
-        x = pd.to_numeric(row.get('Pass_End_X'), errors='coerce')
-        y = pd.to_numeric(row.get('Pass_End_Y'), errors='coerce')
-        height = str(row.get('Pass_Height', 'Unknown'))
-        
-        if pd.isna(x) or pd.isna(y): 
-            return row.get('Tactical_Bucket', 'Uncategorized')
-            
-        if x > 80: 
-            return 'Play Beyond'
-        elif (y < 18 or y > 62) and x > 18: 
-            return 'Play Around'
-        elif 60 <= x <= 80: 
-            # NEW RULE: Checks if it went over the opposition players
-            if 'High' in height:
-                return 'Play Into'
-            else:
+    if not actions_df.empty:
+        def categorize_pass(row):
+            if str(row.get('Action_Category')) != 'Pass': return row.get('Tactical_Bucket')
+            x = pd.to_numeric(row.get('Pass_End_X'), errors='coerce')
+            y = pd.to_numeric(row.get('Pass_End_Y'), errors='coerce')
+            height = str(row.get('Pass_Height', 'Unknown'))
+            if pd.isna(x) or pd.isna(y): return row.get('Tactical_Bucket', 'Uncategorized')
+            if x > 80: return 'Play Beyond'
+            elif (y < 18 or y > 62) and x > 18: return 'Play Around'
+            elif 60 <= x <= 80: 
+                if 'High' in height: return 'Play Into'
                 return 'Play Through'
-        elif 25 <= x < 60: 
-            return 'Play Through'
-        else: 
-            return 'Short / Retain'
-            
-    actions_df['Tactical_Bucket'] = actions_df.apply(categorize_pass, axis=1)
-    
-    # NEW FIX: Safely initialize columns if they don't exist yet in the CSV
-    if 'Under_Pressure' not in actions_df.columns:
-        actions_df['Under_Pressure'] = 0
-    actions_df['Under_Pressure'] = pd.to_numeric(actions_df['Under_Pressure'], errors='coerce').fillna(0)
-    
-    if 'Play_Pattern' not in actions_df.columns:
-        actions_df['Play_Pattern'] = 'Unknown'
-    actions_df['Play_Pattern'] = actions_df['Play_Pattern'].astype(str)
-    
+            elif 25 <= x < 60: return 'Play Through'
+            else: return 'Short / Retain'
+                
+        actions_df['Tactical_Bucket'] = actions_df.apply(categorize_pass, axis=1)
+        if 'Under_Pressure' not in actions_df.columns: actions_df['Under_Pressure'] = 0
+        actions_df['Under_Pressure'] = pd.to_numeric(actions_df['Under_Pressure'], errors='coerce').fillna(0)
+        if 'Play_Pattern' not in actions_df.columns: actions_df['Play_Pattern'] = 'Unknown'
+        actions_df['Play_Pattern'] = actions_df['Play_Pattern'].astype(str)
+        
     return matches_df, actions_df
 
 matches_df, actions_df = load_data()
 
-# --- HTML COMPILER HELPER ---
+# --- OPTA LEAGUE JSON PARSER ---
+def load_opta_json():
+    try:
+        with open('GK_2025_all.json', 'r', encoding='utf-8') as f:
+            opta_raw = json.load(f)
+            
+        rows = []
+        for team, players in opta_raw.items():
+            for p in players:
+                if 'stat' in p:
+                    stats = {s['name']: float(s['value']) for s in p['stat']}
+                    stats['Player'] = p.get('matchName', f"{p.get('firstName')} {p.get('lastName')}")
+                    stats['Team'] = team
+                    
+                    # Calculate Custom Opta Metrics
+                    mins = stats.get('Time Played', 0)
+                    if mins >= 450:
+                        stats['Saves_per_90'] = (stats.get('Saves Made', 0) / mins) * 90
+                        stats['GC_per_90'] = (stats.get('Goals Conceded', 0) / mins) * 90
+                        stats['Recoveries_per_90'] = (stats.get('Recoveries', 0) / mins) * 90
+                        
+                        saves = stats.get('Saves Made', 0)
+                        gc = stats.get('Goals Conceded', 0)
+                        stats['Save_Pct'] = (saves / (saves + gc) * 100) if (saves + gc) > 0 else 0
+                        
+                        succ_dist = stats.get('GK Successful Distribution', 0)
+                        unsucc_dist = stats.get('GK Unsuccessful Distribution', 0)
+                        stats['Dist_Pct'] = (succ_dist / (succ_dist + unsucc_dist) * 100) if (succ_dist + unsucc_dist) > 0 else 0
+                        
+                        rows.append(stats)
+        return pd.DataFrame(rows)
+    except Exception as e:
+        return pd.DataFrame()
+
+opta_df = load_opta_json()
+
+# --- HARDCODED KR GKI LEADERBOARD ---
+# Based on Opta Data PDF 2025 Report
+gki_data = {
+    'Goalkeeper': ['H. Georgsson', 'Á. Ólafsson', 'Á. Einarsson', 'A. Einarsson', 'V. Sigurðsson', 'M. Zapytowski', 'S. Auðunsson', 'P. Arinbjornsson', 'I. Jónsson', 'F. Schram', 'W. Tønning', 'M. Rosenørn', 'S. Ágústsson'],
+    'Team': ['KR', 'Stjarnan', 'IA', 'Breidablik', 'Fram', 'IBV', 'KA', 'Vikingur', 'Vikingur', 'Valur', 'KA', 'FH', 'Valur'],
+    'Shot Stopping': [0.486, 0.681, 0.654, 0.602, 0.807, 0.766, 0.404, 0.389, 0.559, 0.662, 0.002, 0.356, 0.199],
+    'Distribution': [0.836, 0.578, 0.524, 0.633, 0.186, 0.195, 0.421, 0.617, 0.398, 0.171, 0.607, 0.220, 0.285],
+    'Sweeping': [0.659, 0.645, 0.875, 0.604, 0.764, 0.650, 1.000, 0.341, 0.188, 0.387, 0.469, 0.299, 0.589],
+    'Command': [0.573, 0.554, 0.500, 0.518, 0.480, 0.769, 0.577, 0.500, 0.638, 0.495, 0.421, 0.573, 0.367],
+    'GKI': [0.643, 0.627, 0.626, 0.605, 0.551, 0.549, 0.517, 0.472, 0.455, 0.432, 0.326, 0.322, 0.304]
+}
+gki_df = pd.DataFrame(gki_data)
+
 def generate_html_report(figs, title):
-    html = f"""
-    <html>
-    <head>
-        <title>{title}</title>
-        <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-        <style>
-            body {{ background-color: #0E1117; color: white; font-family: sans-serif; padding: 20px; }}
-            .chart-container {{ margin-bottom: 40px; border: 1px solid #333; padding: 10px; border-radius: 8px; }}
-        </style>
-    </head>
-    <body>
-        <h1 style="text-align: center;">{title}</h1>
-    """
-    for fig in figs:
-        html += f"<div class='chart-container'>{fig.to_html(full_html=False, include_plotlyjs=False)}</div>"
+    html = f"<html><head><title>{title}</title><script src='https://cdn.plot.ly/plotly-latest.min.js'></script><style>body {{ background-color: #0E1117; color: white; font-family: sans-serif; padding: 20px; }} .chart-container {{ margin-bottom: 40px; border: 1px solid #333; padding: 10px; border-radius: 8px; }} </style></head><body><h1 style='text-align: center;'>{title}</h1>"
+    for fig in figs: html += f"<div class='chart-container'>{fig.to_html(full_html=False, include_plotlyjs=False)}</div>"
     html += "</body></html>"
     return html
 
-# --- INITIALIZE SESSION STATE FOR NAVIGATION ---
-if "app_mode" not in st.session_state:
-    st.session_state["app_mode"] = "Single Match"
-if "selected_match" not in st.session_state:
-    st.session_state["selected_match"] = matches_df['Match_ID'].dropna().unique()[0]
-if "selected_period_month" not in st.session_state:
-    st.session_state["selected_period_month"] = None
+if "app_mode" not in st.session_state: st.session_state["app_mode"] = "League Benchmark (Opta)"
+if "selected_match" not in st.session_state: 
+    st.session_state["selected_match"] = matches_df['Match_ID'].dropna().unique()[0] if not matches_df.empty else None
+if "selected_period_month" not in st.session_state: st.session_state["selected_period_month"] = None
 
 def set_match_view(match_id):
     st.session_state["app_mode"] = "Single Match"
     st.session_state["selected_match"] = match_id
 
-# --- SIDEBAR NAVIGATION (FIXED ROUTING LOGIC) ---
 st.sidebar.header("Navigation")
-
-modes = ["Single Match", "Monthly Report", "Season Report"]
+modes = ["League Benchmark (Opta)", "Single Match", "Monthly Report"]
 current_index = modes.index(st.session_state["app_mode"])
-
-# Use index instead of key to prevent Streamlit exception upon chart click
-selected_mode = st.sidebar.radio(
-    "Select Report Level", 
-    modes,
-    index=current_index
-)
-
+selected_mode = st.sidebar.radio("Select Report Level", modes, index=current_index)
 if selected_mode != st.session_state["app_mode"]:
     st.session_state["app_mode"] = selected_mode
     st.rerun()
-
 report_mode = st.session_state["app_mode"]
 
 st.sidebar.markdown("---")
@@ -235,21 +218,99 @@ def get_dynamic_logo(name):
 
 def render_high_res_logo(width_px, align="left"):
     if os.path.exists("kr_logo.png"):
-        with open("kr_logo.png", "rb") as img_file:
-            b64_str = base64.b64encode(img_file.read()).decode()
+        with open("kr_logo.png", "rb") as img_file: b64_str = base64.b64encode(img_file.read()).decode()
         img_html = f'<img src="data:image/png;base64,{b64_str}" style="width: {width_px}px; height: auto;">'
-    else:
-        img_html = f'<img src="{get_dynamic_logo("KR Reykjavik")}" style="width: {width_px}px;">'
-        
-    if align == "right":
-        st.markdown(f"<div style='display:flex; justify-content:flex-end;'>{img_html}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div style='display:flex; justify-content:flex-start;'>{img_html}</div>", unsafe_allow_html=True)
+    else: img_html = f'<img src="{get_dynamic_logo("KR Reykjavik")}" style="width: {width_px}px;">'
+    st.markdown(f"<div style='display:flex; justify-content:flex-{'end' if align=='right' else 'start'};'>{img_html}</div>", unsafe_allow_html=True)
 
 # ==========================================
-# MODE 1: SINGLE MATCH REPORT
+# MODE 1: LEAGUE BENCHMARK (OPTA)
 # ==========================================
-if report_mode == "Single Match":
+if report_mode == "League Benchmark (Opta)":
+    
+    col_logo, col_title = st.columns([1, 8])
+    with col_logo: render_high_res_logo(80)
+    with col_title: st.markdown("<h1 style='margin-top: 10px;'>Besta Deild - Goalkeeper Index (GKI)</h1>", unsafe_allow_html=True)
+    
+    st.markdown("*Composite index across Shot Stopping (40%), Distribution (35%), Sweeping (15%), and Command (10%). Min-max normalised against the 2025 Besta deild population (n=13, ≥450 mins). Opta data produced by KR Analytics.*")
+    st.markdown("---")
+
+    # KR #1 Spotlight
+    st.markdown("### 🥇 League Leader: Halldór Georgsson (KR)")
+    kr_kpi1, kr_kpi2, kr_kpi3, kr_kpi4 = st.columns(4)
+    kr_kpi1.metric(label="Overall GKI", value="0.643", delta="Rank: #1")
+    kr_kpi2.metric(label="Distribution %", value="94.5%", delta="Rank: #1")
+    kr_kpi3.metric(label="Progressive Carries", value="148")
+    kr_kpi4.metric(label="Save %", value="61.3%", delta="Area for Dev", delta_color="inverse")
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Visualizations
+    col_radar, col_scatter = st.columns([1, 1])
+    
+    with col_radar:
+        st.markdown("#### GKI Profile Comparison")
+        compare_keeper = st.selectbox("Compare H. Georgsson to:", gki_df[gki_df['Goalkeeper'] != 'H. Georgsson']['Goalkeeper'])
+        
+        kr_stats = gki_df[gki_df['Goalkeeper'] == 'H. Georgsson'].iloc[0]
+        comp_stats = gki_df[gki_df['Goalkeeper'] == compare_keeper].iloc[0]
+        
+        categories = ['Shot Stopping', 'Distribution', 'Sweeping', 'Command']
+        
+        fig_gki_radar = go.Figure()
+        fig_gki_radar.add_trace(go.Scatterpolar(
+            r=[kr_stats[cat] for cat in categories] + [kr_stats[categories[0]]],
+            theta=categories + [categories[0]],
+            fill='toself',
+            name='H. Georgsson (KR)',
+            line_color='#00BFFF'
+        ))
+        fig_gki_radar.add_trace(go.Scatterpolar(
+            r=[comp_stats[cat] for cat in categories] + [comp_stats[categories[0]]],
+            theta=categories + [categories[0]],
+            fill='toself',
+            name=f"{comp_stats['Goalkeeper']} ({comp_stats['Team']})",
+            line_color='#FF3333'
+        ))
+        
+        fig_gki_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+            showlegend=True,
+            template="plotly_dark",
+            margin=dict(l=40, r=40, t=40, b=40)
+        )
+        st.plotly_chart(fig_gki_radar, use_container_width=True)
+
+    with col_scatter:
+        st.markdown("#### Shot Stopping vs. Workload (League)")
+        if not opta_df.empty:
+            fig_scatter = px.scatter(
+                opta_df, x="Saves_per_90", y="Save_Pct", 
+                color="Team", text="Player", size="Time Played",
+                title="Save % vs. Saves per 90",
+                labels={"Saves_per_90": "Saves per 90", "Save_Pct": "Save Percentage (%)"},
+                template="plotly_dark"
+            )
+            fig_scatter.update_traces(textposition='top center')
+            fig_scatter.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+            st.plotly_chart(fig_scatter, use_container_width=True)
+        else:
+            st.warning("Please upload 'GK_2025_all.json' to the repository to view dynamic scatter plots.")
+
+    st.markdown("---")
+    st.markdown("#### 🏆 2025 Besta deild GKI Leaderboard")
+    st.dataframe(gki_df.style.background_gradient(cmap='viridis', subset=['GKI', 'Shot Stopping', 'Distribution', 'Sweeping', 'Command']), use_container_width=True)
+    
+    st.info("**Analyst Note:** Halldór ranks #1 overall (GKI 0.643) driven primarily by exceptional distribution (0.836 - best in league by a significant margin). His 94.5% distribution accuracy reflects KR's system requirement for an active sweeper-keeper. Shot stopping (0.486) is the weakest sub-score; 61.3% save rate and only 2 clean sheets in 25 appearances are areas for development.")
+
+# ==========================================
+# MODE 2: SINGLE MATCH REPORT
+# ==========================================
+elif report_mode == "Single Match":
+    if matches_df.empty or actions_df.empty:
+        st.warning("No Single Match Event Data Found. Awaiting Opta match-by-match event pipeline integration into Airtable.")
+        st.stop()
+        
     def format_match_label(match_id):
         row = matches_df[matches_df['Match_ID'] == match_id].iloc[0]
         team = row.get('Team_GK', 'Unknown Team')
@@ -278,7 +339,6 @@ if report_mode == "Single Match":
     valid_shots = match_shots.dropna(subset=['Pass_Start_X', 'Pass_Start_Y']).copy()
     valid_shots.reset_index(drop=True, inplace=True)
 
-    # Filter defensive actions (Clearances, Claims, Punches, Sweeper, Interceptions)
     def_actions = match_all_actions[
         match_all_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Smother|Sweeper|Interception', case=False, na=False) | 
         match_all_actions['Action_Category'].isin(['Clearance', 'Interception'])
@@ -411,11 +471,6 @@ if report_mode == "Single Match":
         fig_shots.update_layout(xaxis=dict(range=[-3, 45], showgrid=False, zeroline=False, visible=False), yaxis=dict(range=[10, 70], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
         st.plotly_chart(fig_shots, width="stretch", on_select="rerun", selection_mode="points", key="shot_chart")
 
-        with st.expander("📥 Download Shot Map & Data"):
-            col_dl1, col_dl2 = st.columns(2)
-            col_dl1.download_button("Download Map (HTML)", data=fig_shots.to_html(include_plotlyjs='cdn'), file_name="Shot_Map.html", mime="text/html")
-            col_dl2.download_button("Download Data (CSV)", data=valid_shots.to_csv(index=False).encode('utf-8'), file_name="Shot_Data.csv", mime="text/csv")
-
     with shot_video:
         st.markdown("### Shot Video Clip")
         if selected_shot_idx is not None and selected_shot_idx < len(valid_shots):
@@ -432,66 +487,6 @@ if report_mode == "Single Match":
                 if pd.notna(notes) and str(notes).strip() != "": st.write(notes)
                 else: st.info("No detailed analysis for this shot.")
 
-            sel_start_x = pd.to_numeric(selected_row.get('Pass_Start_X'), errors='coerce')
-            sel_start_y = pd.to_numeric(selected_row.get('Pass_Start_Y'), errors='coerce')
-            sel_end_x = pd.to_numeric(selected_row.get('Pass_End_X'), errors='coerce')
-            sel_end_y = pd.to_numeric(selected_row.get('Pass_End_Y'), errors='coerce')
-            raw_end_z = pd.to_numeric(selected_row.get('Pass_End_Z'), errors='coerce')
-            raw_gk_y = pd.to_numeric(selected_row.get('GK_Position_Y'), errors='coerce')
-
-            sel_dist_str = "Unknown"
-            if pd.notna(sel_start_x) and pd.notna(sel_start_y) and pd.notna(sel_end_x) and pd.notna(sel_end_y):
-                sel_dist = ((sel_end_x - sel_start_x)**2 + (sel_end_y - sel_start_y)**2)**0.5
-                sel_dist_str = f"{sel_dist:.1f} yds"
-
-            if pd.notna(sel_end_y) and pd.notna(raw_end_z):
-                st.markdown("#### Goal Placement")
-                
-                # FIX: Inverted the math to accurately map from the Shooter's POV
-                if pd.notna(sel_start_x) and sel_start_x > 60:
-                    y_centered = sel_end_y - 40
-                else:
-                    y_centered = 40 - sel_end_y
-                
-                fig_goal = go.Figure()
-                
-                fig_goal.add_shape(type="rect", x0=-4, y0=0, x1=4, y1=2.67, line=dict(color="white", width=4))
-                fig_goal.add_shape(type="line", x0=-6, y0=0, x1=6, y1=0, line=dict(color="#4CAF50", width=3))
-                
-                if pd.notna(raw_gk_y):
-                    # FIX: Inverted the GK mapping as well
-                    if pd.notna(sel_start_x) and sel_start_x > 60:
-                        gk_y_centered = raw_gk_y - 40
-                    else:
-                        gk_y_centered = 40 - raw_gk_y
-                        
-                    fig_goal.add_trace(go.Scatter(
-                        x=[gk_y_centered], y=[0.1], mode='markers',
-                        name='Goalkeeper',
-                        marker=dict(size=22, color='#00FFFF', symbol='triangle-up', line=dict(color='white', width=1)),
-                        hoverinfo='text', hovertext="Goalkeeper Position", showlegend=True
-                    ))
-
-                point_color = 'red' if selected_row.get('Goal_Conceded') == 1 else '#00FF00'
-                fig_goal.add_trace(go.Scatter(
-                    x=[y_centered], y=[raw_end_z], mode='markers',
-                    name='Shot',
-                    marker=dict(size=14, color=point_color, symbol='circle', line=dict(color='white', width=2)),
-                    hoverinfo='text', hovertext=f"Ball Height: {raw_end_z} yds", showlegend=True
-                ))
-                
-                fig_goal.update_layout(
-                    xaxis=dict(range=[-6, 6], visible=False),
-                    yaxis=dict(range=[-0.5, 3.5], visible=False, scaleanchor="x", scaleratio=1, constraintoward="bottom"),
-                    height=200, margin=dict(l=0, r=0, t=10, b=0),
-                    legend=dict(
-                        orientation="v", yanchor="top", y=0.95, xanchor="right", x=0.95,
-                        font=dict(size=11, color="white"), bgcolor="rgba(0,0,0,0.5)", bordercolor="white", borderwidth=1
-                    ),
-                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', hovermode="closest"
-                )
-                st.plotly_chart(fig_goal, width="stretch", key="goal_mouth_chart")
-
             sel_outcome = str(selected_row.get('Outcome', 'Unknown'))
             sel_psxg = pd.to_numeric(selected_row.get('PSxG'), errors='coerce')
             sel_psxg_str = f"{sel_psxg:.2f}" if pd.notna(sel_psxg) else "N/A"
@@ -504,7 +499,6 @@ if report_mode == "Single Match":
             
             mc3, mc4 = st.columns(2)
             mc3.metric("PSxG", sel_psxg_str)
-            mc4.metric("Distance", sel_dist_str)
 
         else:
             st.info("👆 Click on any shot line to load the video.")
@@ -791,39 +785,30 @@ if report_mode == "Single Match":
                 st.error("Failed to save notes. Check your Airtable credentials.")
 
 # ==========================================
-# MODE 2 & 3: AGGREGATED REPORTS (MONTHLY / SEASON)
+# MODE 3: MONTHLY REPORT
 # ==========================================
 else:
-    if report_mode == "Monthly Report":
-        st.sidebar.subheader("Select Month")
-        available_periods = [m for m in matches_df['Month_Year'].unique() if m != 'Unknown Month']
-        if not available_periods:
-            st.error("No valid dates found in Matches.csv.")
-            st.stop()
-            
-        if st.session_state["selected_period_month"] not in available_periods:
-            st.session_state["selected_period_month"] = available_periods[0]
-            
-        selected_period = st.sidebar.selectbox("Month", available_periods, key="selected_period_month")
-        agg_matches = matches_df[matches_df['Month_Year'] == selected_period]
-        report_title = f"{selected_period} Performance Report"
-        analysis_title = "Monthly Performance Analysis"
+    if matches_df.empty or actions_df.empty:
+        st.warning("No Match Event Data Found. Awaiting Opta match-by-match event pipeline integration into Airtable.")
+        st.stop()
         
-    else:  # Season Report
-        st.sidebar.subheader("Select Season")
-        available_periods = [s for s in matches_df['Season'].unique() if s != 'Unknown Season']
-        if not available_periods:
-            st.error("No valid dates found in Matches.csv.")
-            st.stop()
-        selected_period = st.sidebar.selectbox("Season", available_periods)
-        agg_matches = matches_df[matches_df['Season'] == selected_period]
-        report_title = f"{selected_period} Season Report"
-        analysis_title = "Seasonal Performance Analysis"
+    st.sidebar.subheader("Select Month")
+    available_periods = [m for m in matches_df['Month_Year'].unique() if m != 'Unknown Month']
+    if not available_periods:
+        st.error("No valid dates found in Matches.csv.")
+        st.stop()
+        
+    if st.session_state["selected_period_month"] not in available_periods:
+        st.session_state["selected_period_month"] = available_periods[0]
+        
+    selected_period = st.sidebar.selectbox("Month", available_periods, key="selected_period_month")
+    agg_matches = matches_df[matches_df['Month_Year'] == selected_period]
+    report_title = f"{selected_period} Performance Report"
+    analysis_title = "Monthly Performance Analysis"
 
     agg_match_ids = agg_matches['Match_ID'].tolist()
     agg_actions = actions_df[actions_df['Match_ID'].isin(agg_match_ids)]
 
-    # --- KPI MATH ---
     total_matches = len(agg_matches)
     clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
     
@@ -852,184 +837,92 @@ else:
     long_ball_pct = (completed_long_balls / total_long_balls * 100) if total_long_balls > 0 else 0
 
     col_logo, col_title = st.columns([1, 8])
-    with col_logo:
-        render_high_res_logo(80)
-    with col_title:
-        st.markdown(f"<h1 style='margin-top: 10px;'>{report_title}</h1>", unsafe_allow_html=True)
+    with col_logo: render_high_res_logo(80)
+    with col_title: st.markdown(f"<h1 style='margin-top: 10px;'>{report_title}</h1>", unsafe_allow_html=True)
     
     st.markdown("---")
 
     st.markdown("### 🧤 Shot Stopping & Box Control")
     col1, col2, col3, col4, col5, col6 = st.columns(6)
-    col1.metric(label="Matches Played", value=total_matches)
-    col2.metric(label="Clean Sheets", value=clean_sheets)
-    col3.metric(label="Total Saves", value=total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
-    col4.metric(label="Expected Goals Prevented", value=f"{goals_prevented:+.2f}", delta="Positive Impact" if goals_prevented > 0 else "Underperformed", delta_color="normal" if goals_prevented > 0 else "inverse")
-    col5.metric(label="PSxG Faced", value=f"{total_psxg:.2f}")
-    col6.metric(label="High Claims/Sweeps", value=total_high_claims)
+    col1.metric("Matches Played", total_matches)
+    col2.metric("Clean Sheets", clean_sheets)
+    col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
+    col4.metric("Expected Goals Prevented", f"{goals_prevented:+.2f}", delta="Positive Impact" if goals_prevented > 0 else "Underperformed", delta_color="normal" if goals_prevented > 0 else "inverse")
+    col5.metric("PSxG Faced", f"{total_psxg:.2f}")
+    col6.metric("High Claims/Sweeps", total_high_claims)
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("### 👟 Distribution Mastery")
     d_col1, d_col2, d_col3, d_col4 = st.columns(4)
-    d_col1.metric(label="Total Passes", value=total_passes)
-    d_col2.metric(label="Passing Accuracy", value=f"{pass_pct:.1f}%")
-    d_col3.metric(label="Long Balls Attempted", value=total_long_balls)
-    d_col4.metric(label="Long Ball Accuracy", value=f"{long_ball_pct:.1f}%")
+    d_col1.metric("Total Passes", total_passes)
+    d_col2.metric("Passing Accuracy", f"{pass_pct:.1f}%")
+    d_col3.metric("Long Balls Attempted", total_long_balls)
+    d_col4.metric("Long Ball Accuracy", f"{long_ball_pct:.1f}%")
 
-    # ==========================================
-    # --- NEW: PSXG PREVENTED TRENDLINE ---
-    # ==========================================
     st.markdown("---")
     st.markdown("### 📈 Form Tracker: PSxG Prevented")
     
     if not agg_actions.empty:
-        # Group data by match
-        match_agg_trend = agg_actions.groupby('Match_ID').agg(
-            PSxG=('PSxG', 'sum'),
-            Goals_Conceded=('Goal_Conceded', 'sum')
-        ).reset_index()
-        
-        # Explicitly round the math to 2 decimals
+        match_agg_trend = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
         match_agg_trend['PSxG_Prevented'] = (match_agg_trend['PSxG'] - match_agg_trend['Goals_Conceded']).round(2)
-        
-        # Merge with match details to get Opponent, Venue, Dates
         trend_df = pd.merge(match_agg_trend, agg_matches[['Match_ID', 'Date_Parsed', 'Opponent', 'Venue', 'Month_Year']], on='Match_ID', how='left')
         
-        if report_mode == "Monthly Report":
-            trend_df = trend_df.sort_values('Date_Parsed')
-            
-            def format_ha(row):
-                v = str(row.get('Venue', 'Home')).strip().title()
-                ha_str = "(H)" if v != "Away" else "(A)"
-                return f"{row['Opponent']} {ha_str}"
-                
-            trend_df['X_Label'] = trend_df.apply(format_ha, axis=1)
-            x_data = trend_df['X_Label']
-            y_data = trend_df['PSxG_Prevented']
-            custom_data = trend_df['Match_ID']
-            title = "Game-by-Game Form (PSxG Prevented)"
-            min_y_scale = 3 
-            
-        else: # Season Report
-            trend_df['Month_Start'] = trend_df['Date_Parsed'].dt.to_period('M').dt.to_timestamp()
-            monthly_trend = trend_df.groupby(['Month_Year', 'Month_Start']).agg(
-                PSxG_Prevented=('PSxG_Prevented', 'sum')
-            ).reset_index().sort_values('Month_Start')
-            
-            # Round the monthly accumulation to 2 decimals as well
-            monthly_trend['PSxG_Prevented'] = monthly_trend['PSxG_Prevented'].round(2)
-            
-            x_data = monthly_trend['Month_Year']
-            y_data = monthly_trend['PSxG_Prevented']
-            custom_data = monthly_trend['Month_Year']
-            title = "Month-by-Month Form (Cumulative PSxG Prevented)"
-            min_y_scale = 6 
+        trend_df = trend_df.sort_values('Date_Parsed')
+        def format_ha(row):
+            ha_str = "(H)" if str(row.get('Venue', 'Home')).strip().title() != "Away" else "(A)"
+            return f"{row['Opponent']} {ha_str}"
+        trend_df['X_Label'] = trend_df.apply(format_ha, axis=1)
+        x_data, y_data, custom_data = trend_df['X_Label'], trend_df['PSxG_Prevented'], trend_df['Match_ID']
+        title, min_y_scale = "Game-by-Game Form (PSxG Prevented)", 3 
 
         fig_trend = go.Figure()
-        
-        # Add a zero line baseline
         fig_trend.add_shape(type="line", x0=-0.5, x1=len(x_data)-0.5, y0=0, y1=0, line=dict(color="gray", width=2, dash="dash"))
+        fig_trend.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines+markers', marker=dict(size=14, color=['#00FF00' if val >= 0 else 'red' for val in y_data], line=dict(color='white', width=2)), line=dict(color='#00BFFF', width=3), customdata=custom_data, hovertemplate="<b>%{x}</b><br>PSxG Prevented: %{y:+.2f}<extra></extra>"))
+        current_max = max(min_y_scale, (y_data.abs().max() if not y_data.empty else 0) * 1.2)
         
-        # Add the trendline
-        fig_trend.add_trace(go.Scatter(
-            x=x_data, 
-            y=y_data, 
-            mode='lines+markers',
-            marker=dict(size=14, color=['#00FF00' if val >= 0 else 'red' for val in y_data], line=dict(color='white', width=2)),
-            line=dict(color='#00BFFF', width=3),
-            customdata=custom_data,
-            hovertemplate="<b>%{x}</b><br>PSxG Prevented: %{y:+.2f}<extra></extra>"
-        ))
-        
-        # Dynamic Y-Axis Scale
-        max_abs_val = y_data.abs().max() if not y_data.empty else 0
-        current_max = max(min_y_scale, max_abs_val * 1.2)
-        
-        fig_trend.update_layout(
-            title=title,
-            yaxis=dict(range=[-current_max, current_max], title="PSxG Prevented", zeroline=False),
-            xaxis=dict(title="Match" if report_mode == "Monthly Report" else "Month"),
-            template='plotly_dark',
-            height=350,
-            clickmode='event+select',
-            margin=dict(l=20, r=20, t=40, b=20)
-        )
+        fig_trend.update_layout(title=title, yaxis=dict(range=[-current_max, current_max], title="PSxG Prevented", zeroline=False), xaxis=dict(title="Match"), template='plotly_dark', height=350, clickmode='event+select', margin=dict(l=20, r=20, t=40, b=20))
         
         st.info("👆 Click on any marker to jump to that specific report.")
-        trend_selection = st.plotly_chart(fig_trend, width="stretch", on_select="rerun", selection_mode="points", key=f"trend_chart_{report_mode}")
+        trend_selection = st.plotly_chart(fig_trend, width="stretch", on_select="rerun", selection_mode="points", key="trend_chart_monthly")
         
-        # Interactivity Routing Logic (FIXED STATE OVERWRITE)
         if trend_selection and "selection" in trend_selection and "points" in trend_selection["selection"]:
             points = trend_selection["selection"]["points"]
-            if len(points) > 0:
-                clicked_idx = points[0].get("point_index", points[0].get("pointIndex"))
-                
-                if clicked_idx is not None:
-                    if report_mode == "Monthly Report":
-                        selected_target = trend_df.iloc[clicked_idx]['Match_ID']
-                        st.session_state["app_mode"] = "Single Match"
-                        st.session_state["selected_match"] = selected_target
-                        st.rerun()
-                    else: 
-                        selected_target = monthly_trend.iloc[clicked_idx]['Month_Year']
-                        st.session_state["app_mode"] = "Monthly Report"
-                        st.session_state["selected_period_month"] = selected_target
-                        st.rerun()
-    else:
-        st.info("Not enough shot-stopping data to generate form trendline.")
+            if len(points) > 0 and points[0].get("pointIndex") is not None:
+                clicked_idx = points[0]["pointIndex"]
+                st.session_state["app_mode"], st.session_state["selected_match"] = "Single Match", trend_df.iloc[clicked_idx]['Match_ID']
+                st.rerun()
 
-    if report_mode == "Monthly Report":
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("### 📅 Monthly Match Log")
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 📅 Monthly Match Log")
+    for _, match_row in agg_matches.sort_values('Date_Parsed').iterrows():
+        date_str = match_row['Date_Parsed'].strftime('%Y-%m-%d') if pd.notna(match_row['Date_Parsed']) else 'Unknown Date'
+        team, opp, t_score, o_score, m_id = str(match_row.get('Team_GK', 'KR Reykjavik')), str(match_row.get('Opponent', 'Opponent')), str(match_row.get('Team_Score', '-')), str(match_row.get('Opponent_Score', '-')), match_row['Match_ID']
         
-        for _, match_row in agg_matches.sort_values('Date_Parsed').iterrows():
-            date_str = match_row['Date_Parsed'].strftime('%Y-%m-%d') if pd.notna(match_row['Date_Parsed']) else 'Unknown Date'
-            team = str(match_row.get('Team_GK', 'KR Reykjavik'))
-            opp = str(match_row.get('Opponent', 'Opponent'))
-            t_score = str(match_row.get('Team_Score', '-'))
-            o_score = str(match_row.get('Opponent_Score', '-'))
-            m_id = match_row['Match_ID']
-            venue = str(match_row.get('Venue', 'Home')).strip().title()
-            
-            col_text, col_btn = st.columns([6, 2])
-            with col_text:
-                if venue == 'Away':
-                    match_str = f"<b>[{date_str}]</b> &nbsp; {opp} &nbsp;<b>{o_score} - {t_score}</b>&nbsp; {team}"
-                else:
-                    match_str = f"<b>[{date_str}]</b> &nbsp; {team} &nbsp;<b>{t_score} - {o_score}</b>&nbsp; {opp}"
-                
-                st.markdown(f"<div style='padding-top: 10px; font-size: 1.1rem;'>{match_str}</div>", unsafe_allow_html=True)
-            with col_btn:
-                st.button("🔍 Go to Report", key=f"btn_{m_id}", on_click=set_match_view, args=(m_id,))
+        col_text, col_btn = st.columns([6, 2])
+        with col_text:
+            match_str = f"<b>[{date_str}]</b> &nbsp; {opp} &nbsp;<b>{o_score} - {t_score}</b>&nbsp; {team}" if str(match_row.get('Venue', 'Home')).strip().title() == 'Away' else f"<b>[{date_str}]</b> &nbsp; {team} &nbsp;<b>{t_score} - {o_score}</b>&nbsp; {opp}"
+            st.markdown(f"<div style='padding-top: 10px; font-size: 1.1rem;'>{match_str}</div>", unsafe_allow_html=True)
+        with col_btn:
+            st.button("🔍 Go to Report", key=f"btn_{m_id}", on_click=set_match_view, args=(m_id,))
 
     st.markdown("---")
-
     st.markdown("### Profile Breakdowns")
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
-        match_agg = agg_actions.groupby('Match_ID').agg(
-            PSxG=('PSxG', 'sum'),
-            Goals_Conceded=('Goal_Conceded', 'sum')
-        ).reset_index()
-        
+        match_agg = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
         merge_cols = ['Match_ID', 'Date_Parsed', 'Opponent']
         if 'Venue' in agg_matches.columns: merge_cols.append('Venue')
         match_agg = pd.merge(match_agg, agg_matches[merge_cols], on='Match_ID', how='left')
         
         def create_match_label(row):
-            d = row['Date_Parsed'].strftime('%m/%d')
-            v = str(row.get('Venue', 'Home')).strip().title()
-            if v == 'Away': return f"{d} @ {row['Opponent']}"
-            return f"{d} vs {row['Opponent']}"
+            d, v = row['Date_Parsed'].strftime('%m/%d'), str(row.get('Venue', 'Home')).strip().title()
+            return f"{d} {'@' if v == 'Away' else 'vs'} {row['Opponent']}"
             
         match_agg['Match_Label'] = match_agg.apply(create_match_label, axis=1)
         match_agg = match_agg.sort_values('Date_Parsed')
 
-        fig_bar = go.Figure(data=[
-            go.Bar(name='PSxG Faced', x=match_agg['Match_Label'], y=match_agg['PSxG'], marker_color='#00BFFF'),
-            go.Bar(name='Goals Conceded', x=match_agg['Match_Label'], y=match_agg['Goals_Conceded'], marker_color='red')
-        ])
+        fig_bar = go.Figure(data=[go.Bar(name='PSxG Faced', x=match_agg['Match_Label'], y=match_agg['PSxG'], marker_color='#00BFFF'), go.Bar(name='Goals Conceded', x=match_agg['Match_Label'], y=match_agg['Goals_Conceded'], marker_color='red')])
         fig_bar.update_layout(barmode='group', title='PSxG vs Goals Conceded per Match', template='plotly_dark')
         st.plotly_chart(fig_bar, width="stretch")
 
@@ -1037,10 +930,7 @@ else:
         if not passes_df.empty:
             dist_agg = passes_df['Tactical_Bucket'].value_counts().reset_index()
             dist_agg.columns = ['Tactical Focus', 'Count']
-            fig_pie = px.pie(dist_agg, names='Tactical Focus', values='Count', title="Passing Distribution Profile", template='plotly_dark', hole=0.4)
-            st.plotly_chart(fig_pie, width="stretch")
-        else:
-            st.info("No passing data available for this period.")
+            st.plotly_chart(px.pie(dist_agg, names='Tactical Focus', values='Count', title="Passing Distribution Profile", template='plotly_dark', hole=0.4), width="stretch")
 
     with st.expander("📥 Download Trend Data"):
         col_c1, col_c2 = st.columns(2)
@@ -1048,61 +938,30 @@ else:
         if not passes_df.empty: col_c2.download_button("Download Pass Split (CSV)", data=dist_agg.to_csv(index=False).encode('utf-8'), file_name="Pass_Split.csv", mime="text/csv")
 
     st.markdown("---")
-
-    st.markdown(f"### 📋 {analysis_title}")
     analysis_text = ""
-    if report_mode == "Monthly Report" and 'Monthly_Analysis' in agg_matches.columns:
+    if 'Monthly_Analysis' in agg_matches.columns:
         valid_notes = agg_matches['Monthly_Analysis'].dropna()
         if not valid_notes.empty: analysis_text = valid_notes.iloc[0]
-    elif report_mode == "Season Report" and 'Seasonal_Analysis' in agg_matches.columns:
-        valid_notes = agg_matches['Seasonal_Analysis'].dropna()
-        if not valid_notes.empty: analysis_text = valid_notes.iloc[0]
 
-    if analysis_text and str(analysis_text).strip() != "":
-        st.info(analysis_text)
-    else:
-        st.warning(f"No {report_mode.lower().replace(' report', '')} analysis logged in the database yet. Add it to the Matches table in Airtable!")
+    if analysis_text and str(analysis_text).strip() != "": st.info(analysis_text)
+    else: st.warning(f"No monthly analysis logged in the database yet.")
 
     st.markdown("---")
-
     st.markdown("### 📝 Coach's Training Notes")
-    st.markdown("*Use this space to log your internal coaching notes, training focus areas, and development feedback for the upcoming sessions.*")
-    
-    clean_period = str(selected_period).replace(" ", "_")
-    note_key = f"{report_mode.replace(' ', '')}_{clean_period}"
-    existing_note = saved_notes.get(note_key, "")
+    note_key = f"{report_mode.replace(' ', '')}_{str(selected_period).replace(' ', '_')}"
     
     with st.form(key=f"form_{note_key}"):
-        coach_note = st.text_area("Coach's Summary Notes:", value=existing_note, height=200, placeholder=f"During {selected_period}, shot-stopping performance resulted in {goals_prevented:+.2f} goals prevented. Focus for next week's training: improving long ball accuracy which currently sits at {long_ball_pct:.1f}%...")
-        submit_btn = st.form_submit_button("💾 Save Notes to Airtable")
-        if submit_btn:
+        coach_note = st.text_area("Coach's Summary Notes:", value=saved_notes.get(note_key, ""), height=200)
+        if st.form_submit_button("💾 Save Notes to Airtable"):
             if save_note_to_airtable(note_key, report_mode, str(selected_period), coach_note):
                 st.session_state["saved_notes"][note_key] = coach_note
                 st.success("Notes successfully synced to database!")
-            else:
-                st.error("Failed to save notes. Check your Airtable credentials.")
+            else: st.error("Failed to save notes.")
 
 # ==========================================
-# EXPORT REPORT BUTTONS (GLOBAL SIDEBAR)
+# EXPORT REPORT BUTTONS
 # ==========================================
 st.sidebar.markdown("---")
 st.sidebar.subheader("📥 Export Full Report")
-
-st.sidebar.markdown("""
-    <a href="javascript:window.print()" style="display:block; width:100%; text-align:center; padding:0.5rem; background-color:#FF4B4B; color:white; border-radius:4px; text-decoration:none; font-weight:bold; margin-bottom: 0.5rem;">
-        🖨️ Save as PDF
-    </a>
-""", unsafe_allow_html=True)
-
-if report_mode == "Single Match":
-    figs_to_export = []
-    for fig_name in ['fig_shots', 'fig_sweeper', 'fig_passes', 'fig_bar', 'fig_radar']:
-        if fig_name in locals():
-            figs_to_export.append(locals()[fig_name])
-    html_export = generate_html_report(figs_to_export, f"{team_name} vs {opp_name} Report")
-    export_name = f"Match_Report_{selected_match}.html"
-else:
-    html_export = generate_html_report([fig_trend, fig_bar, fig_pie] if 'fig_trend' in locals() else [fig_bar, fig_pie], report_title)
-    export_name = f"{report_title.replace(' ', '_')}.html"
-    
-st.sidebar.download_button("🌐 Download Interactive HTML", data=html_export, file_name=export_name, mime="text/html", width="stretch")
+st.sidebar.markdown('<a href="javascript:window.print()" style="display:block; width:100%; text-align:center; padding:0.5rem; background-color:#FF4B4B; color:white; border-radius:4px; text-decoration:none; font-weight:bold; margin-bottom: 0.5rem;">🖨️ Save as PDF</a>', unsafe_allow_html=True)
+st.sidebar.download_button("🌐 Download Interactive HTML", data=generate_html_report([fig_shots, fig_sweeper, fig_passes] if report_mode == "Single Match" else ([fig_gki_radar, fig_scatter] if report_mode == "League Benchmark (Opta)" else [fig_trend, fig_bar]), "Report"), file_name=f"Report.html", mime="text/html", width="stretch")

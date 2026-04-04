@@ -174,7 +174,7 @@ def load_opta_json():
 opta_df = load_opta_json()
 
 # --- HARDCODED KR GKI LEADERBOARD ---
-# Based on Opta Data PDF 2025 Report
+# Based on Opta Data PDF 2025 Report [cite: 8, 18]
 gki_data = {
     'Goalkeeper': ['H. Georgsson', 'Á. Ólafsson', 'Á. Einarsson', 'A. Einarsson', 'V. Sigurðsson', 'M. Zapytowski', 'S. Auðunsson', 'P. Arinbjornsson', 'I. Jónsson', 'F. Schram', 'W. Tønning', 'M. Rosenørn', 'S. Ágústsson'],
     'Team': ['KR', 'Stjarnan', 'IA', 'Breidablik', 'Fram', 'IBV', 'KA', 'Vikingur', 'Vikingur', 'Valur', 'KA', 'FH', 'Valur'],
@@ -232,7 +232,7 @@ if report_mode == "League Benchmark (Opta)":
     with col_logo: render_high_res_logo(80)
     with col_title: st.markdown("<h1 style='margin-top: 10px;'>Besta Deild - Goalkeeper Index (GKI)</h1>", unsafe_allow_html=True)
     
-    st.markdown("*Composite index across Shot Stopping (40%), Distribution (35%), Sweeping (15%), and Command (10%). Min-max normalised against the 2025 Besta deild population (n=13, ≥450 mins). Opta data produced by KR Analytics.*")
+    st.markdown("*Composite index across Shot Stopping (40%), Distribution (35%), Sweeping (15%), and Command (10%). Min-max normalised against the 2025 Besta deild population (n=13, ≥450 mins). Opta data produced by KR Analytics.* [cite: 4, 5, 6, 26]")
     st.markdown("---")
 
     # KR #1 Spotlight
@@ -250,7 +250,17 @@ if report_mode == "League Benchmark (Opta)":
     
     with col_radar:
         st.markdown("#### GKI Profile Comparison")
-        compare_keeper = st.selectbox("Compare H. Georgsson to:", gki_df[gki_df['Goalkeeper'] != 'H. Georgsson']['Goalkeeper'])
+        
+        # Function to format the dropdown labels
+        def format_keeper_label(keeper_name):
+            team_name = gki_df.loc[gki_df['Goalkeeper'] == keeper_name, 'Team'].iloc[0]
+            return f"{keeper_name} ({team_name})"
+            
+        compare_keeper = st.selectbox(
+            "Compare H. Georgsson to:", 
+            gki_df[gki_df['Goalkeeper'] != 'H. Georgsson']['Goalkeeper'],
+            format_func=format_keeper_label
+        )
         
         kr_stats = gki_df[gki_df['Goalkeeper'] == 'H. Georgsson'].iloc[0]
         comp_stats = gki_df[gki_df['Goalkeeper'] == compare_keeper].iloc[0]
@@ -301,7 +311,7 @@ if report_mode == "League Benchmark (Opta)":
     st.markdown("#### 🏆 2025 Besta deild GKI Leaderboard")
     st.dataframe(gki_df.style.background_gradient(cmap='viridis', subset=['GKI', 'Shot Stopping', 'Distribution', 'Sweeping', 'Command']), use_container_width=True)
     
-    st.info("**Analyst Note:** Halldór ranks #1 overall (GKI 0.643) driven primarily by exceptional distribution (0.836 - best in league by a significant margin). His 94.5% distribution accuracy reflects KR's system requirement for an active sweeper-keeper. Shot stopping (0.486) is the weakest sub-score; 61.3% save rate and only 2 clean sheets in 25 appearances are areas for development.")
+    st.info("**Analyst Note:** Halldór ranks #1 overall (GKI 0.643) driven primarily by exceptional distribution (0.836 - best in league by a significant margin). His 94.5% distribution accuracy reflects KR's system requirement for an active sweeper-keeper. Shot stopping (0.486) is the weakest sub-score; 61.3% save rate and only 2 clean sheets in 25 appearances are areas for development. [cite: 20, 21, 22]")
 
 # ==========================================
 # MODE 2: SINGLE MATCH REPORT
@@ -471,6 +481,11 @@ elif report_mode == "Single Match":
         fig_shots.update_layout(xaxis=dict(range=[-3, 45], showgrid=False, zeroline=False, visible=False), yaxis=dict(range=[10, 70], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
         st.plotly_chart(fig_shots, width="stretch", on_select="rerun", selection_mode="points", key="shot_chart")
 
+        with st.expander("📥 Download Shot Map & Data"):
+            col_dl1, col_dl2 = st.columns(2)
+            col_dl1.download_button("Download Map (HTML)", data=fig_shots.to_html(include_plotlyjs='cdn'), file_name="Shot_Map.html", mime="text/html")
+            col_dl2.download_button("Download Data (CSV)", data=valid_shots.to_csv(index=False).encode('utf-8'), file_name="Shot_Data.csv", mime="text/csv")
+
     with shot_video:
         st.markdown("### Shot Video Clip")
         if selected_shot_idx is not None and selected_shot_idx < len(valid_shots):
@@ -487,6 +502,66 @@ elif report_mode == "Single Match":
                 if pd.notna(notes) and str(notes).strip() != "": st.write(notes)
                 else: st.info("No detailed analysis for this shot.")
 
+            sel_start_x = pd.to_numeric(selected_row.get('Pass_Start_X'), errors='coerce')
+            sel_start_y = pd.to_numeric(selected_row.get('Pass_Start_Y'), errors='coerce')
+            sel_end_x = pd.to_numeric(selected_row.get('Pass_End_X'), errors='coerce')
+            sel_end_y = pd.to_numeric(selected_row.get('Pass_End_Y'), errors='coerce')
+            raw_end_z = pd.to_numeric(selected_row.get('Pass_End_Z'), errors='coerce')
+            raw_gk_y = pd.to_numeric(selected_row.get('GK_Position_Y'), errors='coerce')
+
+            sel_dist_str = "Unknown"
+            if pd.notna(sel_start_x) and pd.notna(sel_start_y) and pd.notna(sel_end_x) and pd.notna(sel_end_y):
+                sel_dist = ((sel_end_x - sel_start_x)**2 + (sel_end_y - sel_start_y)**2)**0.5
+                sel_dist_str = f"{sel_dist:.1f} yds"
+
+            if pd.notna(sel_end_y) and pd.notna(raw_end_z):
+                st.markdown("#### Goal Placement")
+                
+                # FIX: Inverted the math to accurately map from the Shooter's POV
+                if pd.notna(sel_start_x) and sel_start_x > 60:
+                    y_centered = sel_end_y - 40
+                else:
+                    y_centered = 40 - sel_end_y
+                
+                fig_goal = go.Figure()
+                
+                fig_goal.add_shape(type="rect", x0=-4, y0=0, x1=4, y1=2.67, line=dict(color="white", width=4))
+                fig_goal.add_shape(type="line", x0=-6, y0=0, x1=6, y1=0, line=dict(color="#4CAF50", width=3))
+                
+                if pd.notna(raw_gk_y):
+                    # FIX: Inverted the GK mapping as well
+                    if pd.notna(sel_start_x) and sel_start_x > 60:
+                        gk_y_centered = raw_gk_y - 40
+                    else:
+                        gk_y_centered = 40 - raw_gk_y
+                        
+                    fig_goal.add_trace(go.Scatter(
+                        x=[gk_y_centered], y=[0.1], mode='markers',
+                        name='Goalkeeper',
+                        marker=dict(size=22, color='#00FFFF', symbol='triangle-up', line=dict(color='white', width=1)),
+                        hoverinfo='text', hovertext="Goalkeeper Position", showlegend=True
+                    ))
+
+                point_color = 'red' if selected_row.get('Goal_Conceded') == 1 else '#00FF00'
+                fig_goal.add_trace(go.Scatter(
+                    x=[y_centered], y=[raw_end_z], mode='markers',
+                    name='Shot',
+                    marker=dict(size=14, color=point_color, symbol='circle', line=dict(color='white', width=2)),
+                    hoverinfo='text', hovertext=f"Ball Height: {raw_end_z} yds", showlegend=True
+                ))
+                
+                fig_goal.update_layout(
+                    xaxis=dict(range=[-6, 6], visible=False),
+                    yaxis=dict(range=[-0.5, 3.5], visible=False, scaleanchor="x", scaleratio=1, constraintoward="bottom"),
+                    height=200, margin=dict(l=0, r=0, t=10, b=0),
+                    legend=dict(
+                        orientation="v", yanchor="top", y=0.95, xanchor="right", x=0.95,
+                        font=dict(size=11, color="white"), bgcolor="rgba(0,0,0,0.5)", bordercolor="white", borderwidth=1
+                    ),
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', hovermode="closest"
+                )
+                st.plotly_chart(fig_goal, width="stretch", key="goal_mouth_chart")
+
             sel_outcome = str(selected_row.get('Outcome', 'Unknown'))
             sel_psxg = pd.to_numeric(selected_row.get('PSxG'), errors='coerce')
             sel_psxg_str = f"{sel_psxg:.2f}" if pd.notna(sel_psxg) else "N/A"
@@ -499,6 +574,7 @@ elif report_mode == "Single Match":
             
             mc3, mc4 = st.columns(2)
             mc3.metric("PSxG", sel_psxg_str)
+            mc4.metric("Distance", sel_dist_str)
 
         else:
             st.info("👆 Click on any shot line to load the video.")

@@ -106,12 +106,12 @@ def load_data():
         matches_df = pd.DataFrame(columns=['Match_ID', 'Date', 'Venue', 'Opponent', 'Team_GK', 'Team_Score', 'Opponent_Score', 'Match_Summary_Notes'])
         actions_df = pd.DataFrame(columns=['Match_ID', 'Action_Category', 'Outcome', 'PSxG', 'Goal_Conceded', 'Pass_Start_X', 'Pass_Start_Y', 'Pass_End_X', 'Pass_End_Y', 'Under_Pressure', 'Play_Pattern', 'Match_Minute'])
         
-    if not matches_df.empty:
-        matches_df['Date_Parsed'] = pd.to_datetime(matches_df['Date'], errors='coerce')
-        matches_df['Month_Year'] = matches_df['Date_Parsed'].dt.strftime('%B %Y').fillna('Unknown Month')
-        matches_df['Season'] = matches_df['Date_Parsed'].dt.strftime('%Y').fillna('Unknown Season')
-        if 'Venue' not in matches_df.columns: matches_df['Venue'] = 'Home'
-            
+    # Always run this, even if empty, to initialize the required columns for the sidebar
+    matches_df['Date_Parsed'] = pd.to_datetime(matches_df['Date'], errors='coerce')
+    matches_df['Month_Year'] = matches_df['Date_Parsed'].dt.strftime('%B %Y').fillna('Unknown Month')
+    matches_df['Season'] = matches_df['Date_Parsed'].dt.strftime('%Y').fillna('Unknown Season')
+    if 'Venue' not in matches_df.columns: matches_df['Venue'] = 'Home'
+        
     if not actions_df.empty:
         def categorize_pass(row):
             if str(row.get('Action_Category')) != 'Pass': return row.get('Tactical_Bucket')
@@ -132,6 +132,11 @@ def load_data():
         actions_df['Under_Pressure'] = pd.to_numeric(actions_df['Under_Pressure'], errors='coerce').fillna(0)
         if 'Play_Pattern' not in actions_df.columns: actions_df['Play_Pattern'] = 'Unknown'
         actions_df['Play_Pattern'] = actions_df['Play_Pattern'].astype(str)
+    else:
+        # Initialize empty columns for the fallback
+        actions_df['Tactical_Bucket'] = pd.Series(dtype=str)
+        actions_df['Under_Pressure'] = pd.Series(dtype=float)
+        actions_df['Play_Pattern'] = pd.Series(dtype=str)
         
     return matches_df, actions_df
 
@@ -203,7 +208,7 @@ def generate_html_report(figs, title):
 
 # --- GLOBAL SEASON FILTER SETUP ---
 st.sidebar.header("Global Filters")
-available_seasons = sorted(matches_df['Season'].unique().tolist())
+available_seasons = sorted([s for s in matches_df['Season'].unique().tolist() if s != 'Unknown Season'])
 if "2025" not in available_seasons:
     available_seasons.append("2025")
 if "2026" not in available_seasons:
@@ -543,7 +548,6 @@ elif report_mode == "Single Match":
             if pd.notna(sel_end_y) and pd.notna(raw_end_z):
                 st.markdown("#### Goal Placement")
                 
-                # FIX: Inverted the math to accurately map from the Shooter's POV
                 if pd.notna(sel_start_x) and sel_start_x > 60:
                     y_centered = sel_end_y - 40
                 else:
@@ -555,7 +559,6 @@ elif report_mode == "Single Match":
                 fig_goal.add_shape(type="line", x0=-6, y0=0, x1=6, y1=0, line=dict(color="#4CAF50", width=3))
                 
                 if pd.notna(raw_gk_y):
-                    # FIX: Inverted the GK mapping as well
                     if pd.notna(sel_start_x) and sel_start_x > 60:
                         gk_y_centered = raw_gk_y - 40
                     else:
@@ -633,7 +636,6 @@ elif report_mode == "Single Match":
             is_active = (selected_swp_idx == i)
             sx, sy = row.get('Pass_Start_X', 0), row.get('Pass_Start_Y', 0)
             
-            # Normalize mapping to the defensive half
             if sx > 60: 
                 sx, sy = 120 - sx, 80 - sy 
                 
@@ -682,7 +684,6 @@ elif report_mode == "Single Match":
     st.markdown("---")
     st.markdown("## 👟 Distribution & Passing")
     
-    # Process Contextual Logic
     valid_passes['Is_Dead_Ball'] = valid_passes['Play_Pattern'].astype(str).str.contains('Goal Kick|Free Kick|Corner|Penalty', case=False)
     valid_passes['Play_State'] = valid_passes['Is_Dead_Ball'].map({True: 'Dead Ball', False: 'Open Play'})
     
@@ -746,7 +747,6 @@ elif report_mode == "Single Match":
             if is_active: line_width, opacity = 5, 1.0          
             else: line_width, opacity = 3, (0.3 if selected_pass_idx is not None else 1.0)
 
-            # Enhanced Context Hover
             pressure_txt = "Pressured" if row.get('Under_Pressure') == 1 else "Uncontested"
             hover_text = f"<b>Minute: {row.get('Match_Minute')}</b><br>Intent: {row.get('Tactical_Bucket')}<br>Height: {row.get('Pass_Height', 'Unknown')}<br>Context: {row.get('Play_State')} ({pressure_txt})<br>Outcome: {row.get('Outcome')}"
 
@@ -825,10 +825,8 @@ elif report_mode == "Single Match":
             actions_df_counts = match_all_actions['Action_Category'].value_counts().reset_index()
             actions_df_counts.columns = ['Action', 'Count']
             
-            # Rename 'Pass' to 'Distribution' strictly for this visual
             actions_df_counts['Action'] = actions_df_counts['Action'].replace({'Pass': 'Distribution'})
             
-            # Find the maximum value to force dynamic scaling
             max_val = actions_df_counts['Count'].max()
             
             fig_radar = px.line_polar(
@@ -838,7 +836,6 @@ elif report_mode == "Single Match":
             )
             fig_radar.update_traces(fill='toself')
             
-            # Force the scale to 10% higher than the max value so nothing gets cut off
             fig_radar.update_layout(
                 polar=dict(
                     radialaxis=dict(
@@ -861,7 +858,6 @@ elif report_mode == "Single Match":
         if not valid_passes.empty:
             phase_df = valid_passes.groupby(['Play_State', 'Outcome']).size().reset_index(name='Count')
             st.plotly_chart(px.bar(phase_df, x='Play_State', y='Count', color='Outcome', title="Dead Ball vs Open Play", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
-
 
     st.markdown("---")
     st.markdown("## 📝 Overall Match Analysis")

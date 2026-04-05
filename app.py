@@ -174,7 +174,6 @@ def load_opta_json():
 opta_df = load_opta_json()
 
 # --- HARDCODED KR GKI LEADERBOARD ---
-# Based on Opta Data PDF 2025 Report [cite: 8, 18]
 gki_data = {
     'Goalkeeper': ['H. Georgsson', 'Á. Ólafsson', 'Á. Einarsson', 'A. Einarsson', 'V. Sigurðsson', 'M. Zapytowski', 'S. Auðunsson', 'P. Arinbjornsson', 'I. Jónsson', 'F. Schram', 'W. Tønning', 'M. Rosenørn', 'S. Ágústsson'],
     'Team': ['KR', 'Stjarnan', 'IA', 'Breidablik', 'Fram', 'IBV', 'KA', 'Vikingur', 'Vikingur', 'Valur', 'KA', 'FH', 'Valur'],
@@ -186,11 +185,36 @@ gki_data = {
 }
 gki_df = pd.DataFrame(gki_data)
 
+# Add rank columns
+gki_df['Rk'] = gki_df['GKI'].rank(ascending=False, method='min').astype(int)
+gki_df['SS Rk'] = gki_df['Shot Stopping'].rank(ascending=False, method='min').astype(int)
+gki_df['Dist Rk'] = gki_df['Distribution'].rank(ascending=False, method='min').astype(int)
+gki_df['Swp Rk'] = gki_df['Sweeping'].rank(ascending=False, method='min').astype(int)
+gki_df['Cmd Rk'] = gki_df['Command'].rank(ascending=False, method='min').astype(int)
+
+# Reorder columns to pair the ranks next to their metrics
+gki_df = gki_df[['Rk', 'Goalkeeper', 'Team', 'GKI', 'SS Rk', 'Shot Stopping', 'Dist Rk', 'Distribution', 'Swp Rk', 'Sweeping', 'Cmd Rk', 'Command']]
+
 def generate_html_report(figs, title):
     html = f"<html><head><title>{title}</title><script src='https://cdn.plot.ly/plotly-latest.min.js'></script><style>body {{ background-color: #0E1117; color: white; font-family: sans-serif; padding: 20px; }} .chart-container {{ margin-bottom: 40px; border: 1px solid #333; padding: 10px; border-radius: 8px; }} </style></head><body><h1 style='text-align: center;'>{title}</h1>"
     for fig in figs: html += f"<div class='chart-container'>{fig.to_html(full_html=False, include_plotlyjs=False)}</div>"
     html += "</body></html>"
     return html
+
+# --- GLOBAL SEASON FILTER SETUP ---
+st.sidebar.header("Global Filters")
+available_seasons = sorted(matches_df['Season'].unique().tolist())
+if "2025" not in available_seasons:
+    available_seasons.append("2025")
+if "2026" not in available_seasons:
+    available_seasons.append("2026")
+    
+available_seasons = sorted(list(set(available_seasons)))
+selected_season = st.sidebar.selectbox("Select Season", available_seasons)
+
+# Filter matches and actions globally based on the selected season
+season_matches_df = matches_df[matches_df['Season'] == selected_season]
+season_actions_df = actions_df[actions_df['Match_ID'].isin(season_matches_df['Match_ID'])]
 
 if "app_mode" not in st.session_state: st.session_state["app_mode"] = "League Benchmark (Opta)"
 if "selected_match" not in st.session_state: 
@@ -202,7 +226,7 @@ def set_match_view(match_id):
     st.session_state["selected_match"] = match_id
 
 st.sidebar.header("Navigation")
-modes = ["League Benchmark (Opta)", "Single Match", "Monthly Report"]
+modes = ["League Benchmark (Opta)", "Single Match", "Match Hub (Monthly)"]
 current_index = modes.index(st.session_state["app_mode"])
 selected_mode = st.sidebar.radio("Select Report Level", modes, index=current_index)
 if selected_mode != st.session_state["app_mode"]:
@@ -232,97 +256,99 @@ if report_mode == "League Benchmark (Opta)":
     with col_logo: render_high_res_logo(80)
     with col_title: st.markdown("<h1 style='margin-top: 10px;'>Besta Deild - Goalkeeper Index (GKI)</h1>", unsafe_allow_html=True)
     
-    st.markdown("*Composite index across Shot Stopping (40%), Distribution (35%), Sweeping (15%), and Command (10%). Min-max normalised against the 2025 Besta deild population (n=13, ≥450 mins). Opta data produced by KR Analytics.* [cite: 4, 5, 6, 26]")
+    st.markdown("*Composite index across Shot Stopping (40%), Distribution (35%), Sweeping (15%), and Command (10%). Min-max normalised against the 2025 Besta deild population (n=13, ≥450 mins). Opta data produced by KR Analytics.*")
     st.markdown("---")
 
-    # KR #1 Spotlight
-    st.markdown("### 🥇 League Leader: Halldór Georgsson (KR)")
-    kr_kpi1, kr_kpi2, kr_kpi3, kr_kpi4 = st.columns(4)
-    kr_kpi1.metric(label="Overall GKI", value="0.643", delta="Rank: #1")
-    kr_kpi2.metric(label="Distribution %", value="94.5%", delta="Rank: #1")
-    kr_kpi3.metric(label="Progressive Carries", value="148")
-    kr_kpi4.metric(label="Save %", value="61.3%", delta="Area for Dev", delta_color="inverse")
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    # Visualizations
-    col_radar, col_scatter = st.columns([1, 1])
-    
-    with col_radar:
-        st.markdown("#### GKI Profile Comparison")
+    if selected_season != "2025":
+        st.info(f"Besta deild GKI tracking data is not yet available for the {selected_season} season. Please switch to the 2025 season to view the historical benchmark.")
+    else:
+        # KR #1 Spotlight
+        st.markdown("### 🥇 League Leader: Halldór Georgsson (KR)")
+        kr_kpi1, kr_kpi2, kr_kpi3, kr_kpi4 = st.columns(4)
+        kr_kpi1.metric(label="Overall GKI", value="0.643", delta="Rank: #1")
+        kr_kpi2.metric(label="Distribution %", value="94.5%", delta="Rank: #1")
+        kr_kpi3.metric(label="Progressive Carries", value="148")
+        kr_kpi4.metric(label="Save %", value="61.3%", delta="Area for Dev", delta_color="inverse")
         
-        # Function to format the dropdown labels
-        def format_keeper_label(keeper_name):
-            team_name = gki_df.loc[gki_df['Goalkeeper'] == keeper_name, 'Team'].iloc[0]
-            return f"{keeper_name} ({team_name})"
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Visualizations
+        col_radar, col_scatter = st.columns([1, 1])
+        
+        with col_radar:
+            st.markdown("#### GKI Profile Comparison")
             
-        compare_keeper = st.selectbox(
-            "Compare H. Georgsson to:", 
-            gki_df[gki_df['Goalkeeper'] != 'H. Georgsson']['Goalkeeper'],
-            format_func=format_keeper_label
-        )
-        
-        kr_stats = gki_df[gki_df['Goalkeeper'] == 'H. Georgsson'].iloc[0]
-        comp_stats = gki_df[gki_df['Goalkeeper'] == compare_keeper].iloc[0]
-        
-        categories = ['Shot Stopping', 'Distribution', 'Sweeping', 'Command']
-        
-        fig_gki_radar = go.Figure()
-        fig_gki_radar.add_trace(go.Scatterpolar(
-            r=[kr_stats[cat] for cat in categories] + [kr_stats[categories[0]]],
-            theta=categories + [categories[0]],
-            fill='toself',
-            name='H. Georgsson (KR)',
-            line_color='#00BFFF'
-        ))
-        fig_gki_radar.add_trace(go.Scatterpolar(
-            r=[comp_stats[cat] for cat in categories] + [comp_stats[categories[0]]],
-            theta=categories + [categories[0]],
-            fill='toself',
-            name=f"{comp_stats['Goalkeeper']} ({comp_stats['Team']})",
-            line_color='#FF3333'
-        ))
-        
-        fig_gki_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-            showlegend=True,
-            template="plotly_dark",
-            margin=dict(l=40, r=40, t=40, b=40)
-        )
-        st.plotly_chart(fig_gki_radar, use_container_width=True)
-
-    with col_scatter:
-        st.markdown("#### Shot Stopping vs. Workload (League)")
-        if not opta_df.empty:
-            fig_scatter = px.scatter(
-                opta_df, x="Saves_per_90", y="Save_Pct", 
-                color="Team", text="Player", size="Time Played",
-                title="Save % vs. Saves per 90",
-                labels={"Saves_per_90": "Saves per 90", "Save_Pct": "Save Percentage (%)"},
-                template="plotly_dark"
+            def format_keeper_label(keeper_name):
+                team_name = gki_df.loc[gki_df['Goalkeeper'] == keeper_name, 'Team'].iloc[0]
+                return f"{keeper_name} ({team_name})"
+                
+            compare_keeper = st.selectbox(
+                "Compare H. Georgsson to:", 
+                gki_df[gki_df['Goalkeeper'] != 'H. Georgsson']['Goalkeeper'],
+                format_func=format_keeper_label
             )
-            fig_scatter.update_traces(textposition='top center')
-            fig_scatter.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig_scatter, use_container_width=True)
-        else:
-            st.warning("Please upload 'GK_2025_all.json' to the repository to view dynamic scatter plots.")
+            
+            kr_stats = gki_df[gki_df['Goalkeeper'] == 'H. Georgsson'].iloc[0]
+            comp_stats = gki_df[gki_df['Goalkeeper'] == compare_keeper].iloc[0]
+            
+            categories = ['Shot Stopping', 'Distribution', 'Sweeping', 'Command']
+            
+            fig_gki_radar = go.Figure()
+            fig_gki_radar.add_trace(go.Scatterpolar(
+                r=[kr_stats[cat] for cat in categories] + [kr_stats[categories[0]]],
+                theta=categories + [categories[0]],
+                fill='toself',
+                name='H. Georgsson (KR)',
+                line_color='#00BFFF'
+            ))
+            fig_gki_radar.add_trace(go.Scatterpolar(
+                r=[comp_stats[cat] for cat in categories] + [comp_stats[categories[0]]],
+                theta=categories + [categories[0]],
+                fill='toself',
+                name=f"{comp_stats['Goalkeeper']} ({comp_stats['Team']})",
+                line_color='#FF3333'
+            ))
+            
+            fig_gki_radar.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+                showlegend=True,
+                template="plotly_dark",
+                margin=dict(l=40, r=40, t=40, b=40)
+            )
+            st.plotly_chart(fig_gki_radar, use_container_width=True)
 
-    st.markdown("---")
-    st.markdown("#### 🏆 2025 Besta deild GKI Leaderboard")
-    st.dataframe(gki_df.style.background_gradient(cmap='viridis', subset=['GKI', 'Shot Stopping', 'Distribution', 'Sweeping', 'Command']), use_container_width=True)
-    
-    st.info("**Analyst Note:** Halldór ranks #1 overall (GKI 0.643) driven primarily by exceptional distribution (0.836 - best in league by a significant margin). His 94.5% distribution accuracy reflects KR's system requirement for an active sweeper-keeper. Shot stopping (0.486) is the weakest sub-score; 61.3% save rate and only 2 clean sheets in 25 appearances are areas for development. [cite: 20, 21, 22]")
+        with col_scatter:
+            st.markdown("#### Shot Stopping vs. Workload (League)")
+            if not opta_df.empty:
+                fig_scatter = px.scatter(
+                    opta_df, x="Saves_per_90", y="Save_Pct", 
+                    color="Team", text="Player", size="Time Played",
+                    title="Save % vs. Saves per 90",
+                    labels={"Saves_per_90": "Saves per 90", "Save_Pct": "Save Percentage (%)"},
+                    template="plotly_dark"
+                )
+                fig_scatter.update_traces(textposition='top center')
+                fig_scatter.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+                st.plotly_chart(fig_scatter, use_container_width=True)
+            else:
+                st.warning("Please upload 'GK_2025_all.json' to the repository to view dynamic scatter plots.")
+
+        st.markdown("---")
+        st.markdown("#### 🏆 2025 Besta deild GKI Leaderboard")
+        st.dataframe(gki_df.style.background_gradient(cmap='viridis', subset=['GKI', 'Shot Stopping', 'Distribution', 'Sweeping', 'Command']), use_container_width=True)
+        
+        st.info("**Analyst Note:** Halldór ranks #1 overall (GKI 0.643) driven primarily by exceptional distribution (0.836 - best in league by a significant margin). His 94.5% distribution accuracy reflects KR's system requirement for an active sweeper-keeper. Shot stopping (0.486) is the weakest sub-score; 61.3% save rate and only 2 clean sheets in 25 appearances are areas for development.")
 
 # ==========================================
 # MODE 2: SINGLE MATCH REPORT
 # ==========================================
 elif report_mode == "Single Match":
-    if matches_df.empty or actions_df.empty:
-        st.warning("No Single Match Event Data Found. Awaiting Opta match-by-match event pipeline integration into Airtable.")
+    if season_matches_df.empty or season_actions_df.empty:
+        st.warning(f"No Single Match Event Data Found for the {selected_season} season. Awaiting Opta match-by-match event pipeline integration into Airtable.")
         st.stop()
         
     def format_match_label(match_id):
-        row = matches_df[matches_df['Match_ID'] == match_id].iloc[0]
+        row = season_matches_df[season_matches_df['Match_ID'] == match_id].iloc[0]
         team = row.get('Team_GK', 'Unknown Team')
         opponent = row.get('Opponent', 'Unknown Opponent')
         venue = str(row.get('Venue', 'Home')).strip().title()
@@ -334,11 +360,11 @@ elif report_mode == "Single Match":
         return f"{team} vs {opponent} ({date_str})"
 
     st.sidebar.subheader("Match Selection")
-    match_options = matches_df['Match_ID'].dropna().unique()
+    match_options = season_matches_df['Match_ID'].dropna().unique()
     selected_match = st.sidebar.selectbox("Select Match", match_options, format_func=format_match_label, key="selected_match")
 
-    match_info = matches_df[matches_df['Match_ID'] == selected_match].iloc[0]
-    match_all_actions = actions_df[actions_df['Match_ID'] == selected_match]
+    match_info = season_matches_df[season_matches_df['Match_ID'] == selected_match].iloc[0]
+    match_all_actions = season_actions_df[season_actions_df['Match_ID'] == selected_match]
 
     match_passes = match_all_actions[match_all_actions['Action_Category'] == 'Pass'].copy()
     valid_passes = match_passes.dropna(subset=['Pass_Start_X', 'Pass_End_X']).copy()
@@ -861,29 +887,29 @@ elif report_mode == "Single Match":
                 st.error("Failed to save notes. Check your Airtable credentials.")
 
 # ==========================================
-# MODE 3: MONTHLY REPORT
+# MODE 3: MATCH HUB (MONTHLY)
 # ==========================================
 else:
-    if matches_df.empty or actions_df.empty:
-        st.warning("No Match Event Data Found. Awaiting Opta match-by-match event pipeline integration into Airtable.")
+    if season_matches_df.empty or season_actions_df.empty:
+        st.warning(f"No Match Event Data Found for the {selected_season} season yet. Awaiting Opta match-by-match event pipeline integration into Airtable.")
         st.stop()
         
     st.sidebar.subheader("Select Month")
-    available_periods = [m for m in matches_df['Month_Year'].unique() if m != 'Unknown Month']
+    available_periods = [m for m in season_matches_df['Month_Year'].unique() if m != 'Unknown Month']
     if not available_periods:
-        st.error("No valid dates found in Matches.csv.")
+        st.error(f"No valid match dates found for the {selected_season} season.")
         st.stop()
         
     if st.session_state["selected_period_month"] not in available_periods:
         st.session_state["selected_period_month"] = available_periods[0]
         
     selected_period = st.sidebar.selectbox("Month", available_periods, key="selected_period_month")
-    agg_matches = matches_df[matches_df['Month_Year'] == selected_period]
+    agg_matches = season_matches_df[season_matches_df['Month_Year'] == selected_period]
     report_title = f"{selected_period} Performance Report"
     analysis_title = "Monthly Performance Analysis"
 
     agg_match_ids = agg_matches['Match_ID'].tolist()
-    agg_actions = actions_df[actions_df['Match_ID'].isin(agg_match_ids)]
+    agg_actions = season_actions_df[season_actions_df['Match_ID'].isin(agg_match_ids)]
 
     total_matches = len(agg_matches)
     clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
@@ -970,16 +996,20 @@ else:
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("### 📅 Monthly Match Log")
-    for _, match_row in agg_matches.sort_values('Date_Parsed').iterrows():
-        date_str = match_row['Date_Parsed'].strftime('%Y-%m-%d') if pd.notna(match_row['Date_Parsed']) else 'Unknown Date'
-        team, opp, t_score, o_score, m_id = str(match_row.get('Team_GK', 'KR Reykjavik')), str(match_row.get('Opponent', 'Opponent')), str(match_row.get('Team_Score', '-')), str(match_row.get('Opponent_Score', '-')), match_row['Match_ID']
-        
-        col_text, col_btn = st.columns([6, 2])
-        with col_text:
-            match_str = f"<b>[{date_str}]</b> &nbsp; {opp} &nbsp;<b>{o_score} - {t_score}</b>&nbsp; {team}" if str(match_row.get('Venue', 'Home')).strip().title() == 'Away' else f"<b>[{date_str}]</b> &nbsp; {team} &nbsp;<b>{t_score} - {o_score}</b>&nbsp; {opp}"
-            st.markdown(f"<div style='padding-top: 10px; font-size: 1.1rem;'>{match_str}</div>", unsafe_allow_html=True)
-        with col_btn:
-            st.button("🔍 Go to Report", key=f"btn_{m_id}", on_click=set_match_view, args=(m_id,))
+    
+    if agg_matches.empty:
+        st.info("No matches scheduled or played in this month yet.")
+    else:
+        for _, match_row in agg_matches.sort_values('Date_Parsed').iterrows():
+            date_str = match_row['Date_Parsed'].strftime('%Y-%m-%d') if pd.notna(match_row['Date_Parsed']) else 'Unknown Date'
+            team, opp, t_score, o_score, m_id = str(match_row.get('Team_GK', 'KR Reykjavik')), str(match_row.get('Opponent', 'Opponent')), str(match_row.get('Team_Score', '-')), str(match_row.get('Opponent_Score', '-')), match_row['Match_ID']
+            
+            col_text, col_btn = st.columns([6, 2])
+            with col_text:
+                match_str = f"<b>[{date_str}]</b> &nbsp; {opp} &nbsp;<b>{o_score} - {t_score}</b>&nbsp; {team}" if str(match_row.get('Venue', 'Home')).strip().title() == 'Away' else f"<b>[{date_str}]</b> &nbsp; {team} &nbsp;<b>{t_score} - {o_score}</b>&nbsp; {opp}"
+                st.markdown(f"<div style='padding-top: 10px; font-size: 1.1rem;'>{match_str}</div>", unsafe_allow_html=True)
+            with col_btn:
+                st.button("🔍 Go to Report", key=f"btn_{m_id}", on_click=set_match_view, args=(m_id,))
 
     st.markdown("---")
     st.markdown("### Profile Breakdowns")

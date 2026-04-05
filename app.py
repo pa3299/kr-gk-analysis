@@ -266,6 +266,7 @@ if report_mode == "League Benchmark (Opta)":
 
     if selected_season != "2025":
         st.info(f"Besta deild GKI tracking data is not yet available for the {selected_season} season. Please switch to the 2025 season to view the historical benchmark.")
+        st.stop()
     else:
         # KR #1 Spotlight
         st.markdown("### 🥇 League Leader: Halldór Georgsson (KR)")

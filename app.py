@@ -98,13 +98,11 @@ saved_notes = st.session_state["saved_notes"]
 
 # --- DATA LOADING & SETUP (MATCHES & ACTIONS) ---
 def load_data():
-    # Force Python to look in the exact same folder where app.py lives
     current_dir = os.path.dirname(os.path.abspath(__file__))
     matches_path = os.path.join(current_dir, 'Matches.csv')
     actions_path = os.path.join(current_dir, 'GK_Actions.csv')
 
     try:
-        # encoding='utf-8-sig' ensures Windows reads the 'í' in Keflavík perfectly
         matches_df = pd.read_csv(matches_path, encoding='utf-8-sig')
         actions_df = pd.read_csv(actions_path, encoding='utf-8-sig')
     except FileNotFoundError:
@@ -134,8 +132,8 @@ def load_data():
                 
         actions_df['Tactical_Bucket'] = actions_df.apply(categorize_pass, axis=1)
         
-        # Ensure Opta columns exist to prevent crashes
-        for col in ['Pass_Length', 'Pass_Direction', 'Pass_Type_Detail', 'Diving_Saves', 'Keeper_Throws', 'Keeper_Pick_Ups', 'Launches']:
+        # Extended safeguards for new Opta stats
+        for col in ['Pass_Length', 'Pass_Direction', 'Pass_Type_Detail', 'Diving_Saves', 'Keeper_Throws', 'Keeper_Pick_Ups', 'Launches', 'Accurate_Sweeper']:
             if col not in actions_df.columns: actions_df[col] = None
             
         actions_df['Under_Pressure'] = pd.to_numeric(actions_df.get('Under_Pressure', 0), errors='coerce').fillna(0)
@@ -149,6 +147,7 @@ def load_data():
         actions_df['PSxG'] = pd.Series(dtype=float)
         actions_df['Pass_Length'] = pd.Series(dtype=float)
         actions_df['Pass_Direction'] = pd.Series(dtype=str)
+        actions_df['Accurate_Sweeper'] = pd.Series(dtype=float)
         
     return matches_df, actions_df
 
@@ -784,9 +783,10 @@ elif report_mode == "Single Match":
     valid_shots = match_shots.dropna(subset=['Pass_Start_X', 'Pass_Start_Y']).copy()
     valid_shots.reset_index(drop=True, inplace=True)
 
+    # Added BallRecovery here so it correctly graphs on the Sweeper Map
     def_actions = match_all_actions[
         match_all_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Smother|Sweeper|Interception', case=False, na=False) | 
-        match_all_actions['Action_Category'].isin(['Clearance', 'Interception'])
+        match_all_actions['Action_Category'].astype(str).str.contains('Clearance|Interception|BallRecovery', case=False, na=False)
     ].dropna(subset=['Pass_Start_X', 'Pass_Start_Y']).copy()
     def_actions.reset_index(drop=True, inplace=True)
 
@@ -1031,22 +1031,26 @@ elif report_mode == "Single Match":
     # --- SWEEPER KEEPER MAP (Left-Aligned) ---
     st.markdown("---")
     st.markdown("## 🧹 Box Control & Sweeping")
-    swp_kpi1, swp_kpi2, swp_kpi3 = st.columns(3)
+    
+    swp_kpi1, swp_kpi2, swp_kpi3, swp_kpi4 = st.columns(4)
     swp_kpi1.metric("Total Defensive Actions", len(def_actions))
     swp_kpi2.metric("High Claims", len(def_actions[def_actions['Outcome'].astype(str).str.contains('Claim', case=False, na=False)]))
     swp_kpi3.metric("Sweeping / Clearances", len(def_actions[def_actions['Outcome'].astype(str).str.contains('Clearance|Sweeper', case=False, na=False)]))
+    swp_kpi4.metric("Ball Recoveries", len(def_actions[def_actions['Action_Category'].astype(str).str.contains('BallRecovery', case=False, na=False)]))
     
     # NEW OPTA AGGREGATE KPIS
     pickups = int(match_all_actions['Keeper_Pick_Ups'].max()) if 'Keeper_Pick_Ups' in match_all_actions.columns and not match_all_actions['Keeper_Pick_Ups'].isna().all() else 0
     throws = int(match_all_actions['Keeper_Throws'].max()) if 'Keeper_Throws' in match_all_actions.columns and not match_all_actions['Keeper_Throws'].isna().all() else 0
     launches = int(match_all_actions['Launches'].max()) if 'Launches' in match_all_actions.columns and not match_all_actions['Launches'].isna().all() else 0
     diving = int(match_all_actions['Diving_Saves'].max()) if 'Diving_Saves' in match_all_actions.columns and not match_all_actions['Diving_Saves'].isna().all() else 0
+    acc_sweeper = int(match_all_actions['Accurate_Sweeper'].max()) if 'Accurate_Sweeper' in match_all_actions.columns and not match_all_actions['Accurate_Sweeper'].isna().all() else 0
 
-    opt_kpi1, opt_kpi2, opt_kpi3, opt_kpi4 = st.columns(4)
+    opt_kpi1, opt_kpi2, opt_kpi3, opt_kpi4, opt_kpi5 = st.columns(5)
     opt_kpi1.metric("Keeper Pick-Ups", pickups)
     opt_kpi2.metric("Keeper Throws", throws)
     opt_kpi3.metric("Launches", launches)
     opt_kpi4.metric("Diving Saves", diving)
+    opt_kpi5.metric("Accurate Sweeper", acc_sweeper)
 
     swp_pitch, swp_info = st.columns([2.5, 1.5])
     with swp_pitch:
@@ -1072,15 +1076,20 @@ elif report_mode == "Single Match":
                 sx, sy = 120 - sx, 80 - sy 
                 
             outcome = str(row.get('Outcome', 'Unknown'))
+            action_cat = str(row.get('Action_Category', 'Unknown'))
+            
             if 'Clearance' in outcome: base_color = '#FFEA00'
             elif 'Claim' in outcome: base_color = '#B0008E'
             elif 'Interception' in outcome: base_color = '#FF5500'
+            elif 'BallRecovery' in action_cat: base_color = '#39FF14' # Neon Green
             else: base_color = '#00BFFF'
             
             size = 18 if is_active else 12
             opacity = 1.0 if not selected_swp_idx or is_active else 0.3
             
-            hover = f"Minute: {row.get('Match_Minute')}<br>Action: {outcome}"
+            action_label = "Ball Recovery" if 'BallRecovery' in action_cat else outcome
+            hover = f"Minute: {row.get('Match_Minute')}<br>Action: {action_label}"
+            
             fig_sweeper.add_trace(go.Scatter(
                 x=[sx], y=[sy], mode='markers', 
                 marker=dict(size=size, color=base_color, line=dict(color='white', width=1)), 
@@ -1097,7 +1106,9 @@ elif report_mode == "Single Match":
                 st.session_state.swp_chart = {"selection": {"points": []}}; st.rerun()
 
             sel_swp = def_actions.iloc[selected_swp_idx]
-            st.metric("Action Type", sel_swp.get('Outcome', 'Unknown'))
+            action_type_label = "Ball Recovery" if 'BallRecovery' in str(sel_swp.get('Action_Category', '')) else sel_swp.get('Outcome', 'Unknown')
+            
+            st.metric("Action Type", action_type_label)
             st.metric("Match Minute", f"{sel_swp.get('Match_Minute', 'N/A')}'")
             
             vid_url = sel_swp.get("Video_URL")

@@ -98,15 +98,20 @@ saved_notes = st.session_state["saved_notes"]
 
 # --- DATA LOADING & SETUP (MATCHES & ACTIONS) ---
 def load_data():
+    # Force Python to look in the exact same folder where app.py lives
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    matches_path = os.path.join(current_dir, 'Matches.csv')
+    actions_path = os.path.join(current_dir, 'GK_Actions.csv')
+
     try:
-        matches_df = pd.read_csv('Matches.csv')
-        actions_df = pd.read_csv('GK_Actions.csv')
+        # encoding='utf-8-sig' ensures Windows reads the 'í' in Keflavík perfectly
+        matches_df = pd.read_csv(matches_path, encoding='utf-8-sig')
+        actions_df = pd.read_csv(actions_path, encoding='utf-8-sig')
     except FileNotFoundError:
-        # Fallback for when dummy data is removed
+        st.error(f"Could not find the CSV files! Looking in: {current_dir}")
         matches_df = pd.DataFrame(columns=['Match_ID', 'Date', 'Venue', 'Opponent', 'Team_GK', 'Team_Score', 'Opponent_Score', 'Match_Summary_Notes'])
         actions_df = pd.DataFrame(columns=['Match_ID', 'Action_Category', 'Outcome', 'PSxG', 'Goal_Conceded', 'Pass_Start_X', 'Pass_Start_Y', 'Pass_End_X', 'Pass_End_Y', 'Under_Pressure', 'Play_Pattern', 'Match_Minute'])
         
-    # Always run this, even if empty, to initialize the required columns for the sidebar
     matches_df['Date_Parsed'] = pd.to_datetime(matches_df['Date'], errors='coerce')
     matches_df['Month_Year'] = matches_df['Date_Parsed'].dt.strftime('%B %Y').fillna('Unknown Month')
     matches_df['Season'] = matches_df['Date_Parsed'].dt.strftime('%Y').fillna('Unknown Season')
@@ -128,15 +133,22 @@ def load_data():
             else: return 'Short / Retain'
                 
         actions_df['Tactical_Bucket'] = actions_df.apply(categorize_pass, axis=1)
-        if 'Under_Pressure' not in actions_df.columns: actions_df['Under_Pressure'] = 0
-        actions_df['Under_Pressure'] = pd.to_numeric(actions_df['Under_Pressure'], errors='coerce').fillna(0)
-        if 'Play_Pattern' not in actions_df.columns: actions_df['Play_Pattern'] = 'Unknown'
-        actions_df['Play_Pattern'] = actions_df['Play_Pattern'].astype(str)
+        
+        # Ensure Opta columns exist to prevent crashes
+        for col in ['Pass_Length', 'Pass_Direction', 'Pass_Type_Detail', 'Diving_Saves', 'Keeper_Throws', 'Keeper_Pick_Ups', 'Launches']:
+            if col not in actions_df.columns: actions_df[col] = None
+            
+        actions_df['Under_Pressure'] = pd.to_numeric(actions_df.get('Under_Pressure', 0), errors='coerce').fillna(0)
+        actions_df['Play_Pattern'] = actions_df.get('Play_Pattern', 'Unknown').astype(str)
+        actions_df['PSxG'] = pd.to_numeric(actions_df.get('PSxG', None), errors='coerce')
+        actions_df['Pass_Length'] = pd.to_numeric(actions_df['Pass_Length'], errors='coerce')
     else:
-        # Initialize empty columns for the fallback
         actions_df['Tactical_Bucket'] = pd.Series(dtype=str)
         actions_df['Under_Pressure'] = pd.Series(dtype=float)
         actions_df['Play_Pattern'] = pd.Series(dtype=str)
+        actions_df['PSxG'] = pd.Series(dtype=float)
+        actions_df['Pass_Length'] = pd.Series(dtype=float)
+        actions_df['Pass_Direction'] = pd.Series(dtype=str)
         
     return matches_df, actions_df
 
@@ -156,7 +168,6 @@ def load_opta_json():
                     stats['Player'] = p.get('matchName', f"{p.get('firstName')} {p.get('lastName')}")
                     stats['Team'] = team
                     
-                    # Calculate Custom Opta Metrics
                     mins = stats.get('Time Played', 0)
                     if mins >= 450:
                         stats['Saves_per_90'] = (stats.get('Saves Made', 0) / mins) * 90
@@ -190,14 +201,11 @@ gki_data = {
 }
 gki_df = pd.DataFrame(gki_data)
 
-# Add rank columns
 gki_df['Rk'] = gki_df['GKI'].rank(ascending=False, method='min').astype(int)
 gki_df['SS Rk'] = gki_df['Shot Stopping'].rank(ascending=False, method='min').astype(int)
 gki_df['Dist Rk'] = gki_df['Distribution'].rank(ascending=False, method='min').astype(int)
 gki_df['Swp Rk'] = gki_df['Sweeping'].rank(ascending=False, method='min').astype(int)
 gki_df['Cmd Rk'] = gki_df['Command'].rank(ascending=False, method='min').astype(int)
-
-# Reorder columns to pair the ranks next to their metrics
 gki_df = gki_df[['Rk', 'Goalkeeper', 'Team', 'GKI', 'SS Rk', 'Shot Stopping', 'Dist Rk', 'Distribution', 'Swp Rk', 'Sweeping', 'Cmd Rk', 'Command']]
 
 def generate_html_report(figs, title):
@@ -217,7 +225,6 @@ if "2026" not in available_seasons:
 available_seasons = sorted(list(set(available_seasons)))
 selected_season = st.sidebar.selectbox("Select Season", available_seasons)
 
-# Filter matches and actions globally based on the selected season
 season_matches_df = matches_df[matches_df['Season'] == selected_season]
 season_actions_df = actions_df[actions_df['Match_ID'].isin(season_matches_df['Match_ID'])]
 
@@ -231,7 +238,7 @@ def set_match_view(match_id):
     st.session_state["selected_match"] = match_id
 
 st.sidebar.header("Navigation")
-modes = ["League Benchmark (Opta)", "Single Match", "Match Hub (Monthly)"]
+modes = ["League Benchmark (Opta)", "Season Report", "Match Hub (Monthly)", "Single Match"]
 current_index = modes.index(st.session_state["app_mode"])
 selected_mode = st.sidebar.radio("Select Report Level", modes, index=current_index)
 if selected_mode != st.session_state["app_mode"]:
@@ -268,7 +275,6 @@ if report_mode == "League Benchmark (Opta)":
         st.info(f"Besta deild GKI tracking data is not yet available for the {selected_season} season. Please switch to the 2025 season to view the historical benchmark.")
         st.stop()
     else:
-        # KR #1 Spotlight
         st.markdown("### 🥇 League Leader: Halldór Georgsson (KR)")
         kr_kpi1, kr_kpi2, kr_kpi3, kr_kpi4 = st.columns(4)
         kr_kpi1.metric(label="Overall GKI", value="0.643", delta="Rank: #1")
@@ -278,7 +284,6 @@ if report_mode == "League Benchmark (Opta)":
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # Visualizations
         col_radar, col_scatter = st.columns([1, 1])
         
         with col_radar:
@@ -343,10 +348,406 @@ if report_mode == "League Benchmark (Opta)":
         st.markdown("#### 🏆 2025 Besta deild GKI Leaderboard")
         st.dataframe(gki_df.style.background_gradient(cmap='viridis', subset=['GKI', 'Shot Stopping', 'Distribution', 'Sweeping', 'Command']), use_container_width=True)
         
-        st.info("**Analyst Note:** Halldór ranks #1 overall (GKI 0.643) driven primarily by exceptional distribution (0.836 - best in league by a significant margin). His 94.5% distribution accuracy reflects KR's system requirement for an active sweeper-keeper. Shot stopping (0.486) is the weakest sub-score; 61.3% save rate and only 2 clean sheets in 25 appearances are areas for development.")
+        st.info("Analyst Note: Halldór ranks #1 overall (GKI 0.643) driven primarily by exceptional distribution (0.836 - best in league by a significant margin). His 94.5% distribution accuracy reflects KR's system requirement for an active sweeper-keeper. Shot stopping (0.486) is the weakest sub-score; 61.3% save rate and only 2 clean sheets in 25 appearances are areas for development.")
 
 # ==========================================
-# MODE 2: SINGLE MATCH REPORT
+# MODE 2: SEASON REPORT
+# ==========================================
+elif report_mode == "Season Report":
+    if season_matches_df.empty or season_actions_df.empty:
+        st.warning(f"No Match Event Data Found for the {selected_season} season yet. Awaiting Opta match-by-match event pipeline integration into Airtable.")
+        st.stop()
+        
+    report_title = f"{selected_season} Season Report"
+    analysis_title = "Seasonal Performance Analysis"
+
+    agg_matches = season_matches_df
+    agg_match_ids = agg_matches['Match_ID'].tolist()
+    agg_actions = season_actions_df[season_actions_df['Match_ID'].isin(agg_match_ids)]
+
+    has_psxg = agg_actions['PSxG'].sum() > 0
+
+    total_matches = len(agg_matches)
+    clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
+    
+    total_psxg = agg_actions['PSxG'].sum() if has_psxg else 0
+    total_goals_conceded = agg_actions['Goal_Conceded'].sum()
+    goals_prevented = total_psxg - total_goals_conceded if has_psxg else 0
+    
+    is_shot = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
+    shots_df = agg_actions[is_shot]
+    total_shots_faced = len(shots_df)
+    
+    total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False)])
+    save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
+
+    claim_sweep_actions = agg_actions[(agg_actions['Action_Category'] == 'Goal Keeper') & (agg_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Sweeper', case=False, na=False))]
+    total_high_claims = len(claim_sweep_actions)
+
+    passes_df = agg_actions[agg_actions['Action_Category'] == 'Pass']
+    total_passes = len(passes_df)
+    completed_passes = len(passes_df[passes_df['Outcome'] == 'Complete'])
+    pass_pct = (completed_passes / total_passes * 100) if total_passes > 0 else 0
+
+    long_balls = passes_df[passes_df['Tactical_Bucket'] == 'Play Beyond']
+    total_long_balls = len(long_balls)
+    completed_long_balls = len(long_balls[long_balls['Outcome'] == 'Complete'])
+    long_ball_pct = (completed_long_balls / total_long_balls * 100) if total_long_balls > 0 else 0
+
+    col_logo, col_title = st.columns([1, 8])
+    with col_logo: render_high_res_logo(80)
+    with col_title: st.markdown(f"<h1 style='margin-top: 10px;'>{report_title}</h1>", unsafe_allow_html=True)
+    
+    st.markdown("---")
+
+    st.markdown("### 🧤 Shot Stopping & Box Control")
+    if has_psxg:
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        col1.metric("Matches Played", total_matches)
+        col2.metric("Clean Sheets", clean_sheets)
+        col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
+        col4.metric("Expected Goals Prevented", f"{goals_prevented:+.2f}", delta="Positive Impact" if goals_prevented > 0 else "Underperformed", delta_color="normal" if goals_prevented > 0 else "inverse")
+        col5.metric("PSxG Faced", f"{total_psxg:.2f}")
+        col6.metric("High Claims/Sweeps", total_high_claims)
+    else:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Matches Played", total_matches)
+        col2.metric("Clean Sheets", clean_sheets)
+        col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
+        col4.metric("High Claims/Sweeps", total_high_claims)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 👟 Distribution Mastery")
+    d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+    d_col1.metric("Total Passes", total_passes)
+    d_col2.metric("Passing Accuracy", f"{pass_pct:.1f}%")
+    d_col3.metric("Long Balls Attempted", total_long_balls)
+    d_col4.metric("Long Ball Accuracy", f"{long_ball_pct:.1f}%")
+
+    st.markdown("---")
+    
+    if not agg_actions.empty:
+        if has_psxg:
+            st.markdown("### 📈 Form Tracker: PSxG Prevented")
+            match_agg_trend = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg_trend['Y_Value'] = (match_agg_trend['PSxG'] - match_agg_trend['Goals_Conceded']).round(2)
+            title = "Month-by-Month Form (Cumulative PSxG Prevented)"
+            y_title = "PSxG Prevented"
+        else:
+            st.markdown("### 📈 Form Tracker: Goals Conceded")
+            match_agg_trend = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg_trend['Y_Value'] = match_agg_trend['Goals_Conceded']
+            title = "Month-by-Month Form (Cumulative Goals Conceded)"
+            y_title = "Goals Conceded"
+
+        trend_df = pd.merge(match_agg_trend, agg_matches[['Match_ID', 'Date_Parsed', 'Opponent', 'Venue', 'Month_Year']], on='Match_ID', how='left')
+        trend_df['Month_Start'] = trend_df['Date_Parsed'].dt.to_period('M').dt.to_timestamp()
+        
+        monthly_trend = trend_df.groupby(['Month_Year', 'Month_Start']).agg(Y_Value=('Y_Value', 'sum')).reset_index().sort_values('Month_Start')
+        
+        x_data, y_data, custom_data = monthly_trend['Month_Year'], monthly_trend['Y_Value'], monthly_trend['Month_Year']
+
+        fig_trend = go.Figure()
+        fig_trend.add_shape(type="line", x0=-0.5, x1=len(x_data)-0.5, y0=0, y1=0, line=dict(color="gray", width=2, dash="dash"))
+        
+        if has_psxg:
+            marker_colors = ['#00FF00' if val >= 0 else 'red' for val in y_data]
+            hover_template = "<b>%{x}</b><br>PSxG Prevented: %{y:+.2f}<extra></extra>"
+        else:
+            marker_colors = ['#00FF00' if val <= 1 else 'red' for val in y_data]
+            hover_template = "<b>%{x}</b><br>Goals Conceded: %{y}<extra></extra>"
+
+        fig_trend.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines+markers', marker=dict(size=14, color=marker_colors, line=dict(color='white', width=2)), line=dict(color='#00BFFF', width=3), customdata=custom_data, hovertemplate=hover_template))
+        
+        current_max = max(4, (y_data.abs().max() if not y_data.empty else 0) * 1.2)
+        fig_trend.update_layout(title=title, yaxis=dict(range=[-current_max if has_psxg else 0, current_max], title=y_title, zeroline=False), xaxis=dict(title="Month"), template='plotly_dark', height=350, clickmode='event+select', margin=dict(l=20, r=20, t=40, b=20))
+        
+        st.info("👆 Click on any marker to jump to that specific monthly report.")
+        trend_selection = st.plotly_chart(fig_trend, width="stretch", on_select="rerun", selection_mode="points", key="trend_chart_season")
+        
+        if trend_selection and "selection" in trend_selection and "points" in trend_selection["selection"]:
+            points = trend_selection["selection"]["points"]
+            if len(points) > 0 and points[0].get("pointIndex") is not None:
+                clicked_idx = points[0]["pointIndex"]
+                st.session_state["app_mode"], st.session_state["selected_period_month"] = "Match Hub (Monthly)", monthly_trend.iloc[clicked_idx]['Month_Year']
+                st.rerun()
+
+    st.markdown("---")
+    st.markdown("### Profile Breakdowns")
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        if has_psxg:
+            match_agg = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            y1, y2, y1_name, y2_name, bar_title = 'PSxG', 'Goals_Conceded', 'PSxG Faced', 'Goals Conceded', 'PSxG vs Goals Conceded per Match'
+        else:
+            match_agg = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            shots_agg = agg_actions[agg_actions['Outcome'].astype(str).str.contains('Shot|Goal|Save', case=False, na=False)].groupby('Match_ID').size().reset_index(name='Shots_Faced')
+            match_agg = pd.merge(match_agg, shots_agg, on='Match_ID', how='left').fillna(0)
+            y1, y2, y1_name, y2_name, bar_title = 'Shots_Faced', 'Goals_Conceded', 'Shots Faced', 'Goals Conceded', 'Shots Faced vs Goals Conceded per Match'
+
+        merge_cols = ['Match_ID', 'Date_Parsed', 'Opponent']
+        if 'Venue' in agg_matches.columns: merge_cols.append('Venue')
+        match_agg = pd.merge(match_agg, agg_matches[merge_cols], on='Match_ID', how='left')
+        
+        def create_match_label(row):
+            d, v = row['Date_Parsed'].strftime('%m/%d'), str(row.get('Venue', 'Home')).strip().title()
+            return f"{d} {'@' if v == 'Away' else 'vs'} {row['Opponent']}"
+            
+        match_agg['Match_Label'] = match_agg.apply(create_match_label, axis=1)
+        match_agg = match_agg.sort_values('Date_Parsed')
+
+        fig_bar = go.Figure(data=[go.Bar(name=y1_name, x=match_agg['Match_Label'], y=match_agg[y1], marker_color='#00BFFF'), go.Bar(name=y2_name, x=match_agg['Match_Label'], y=match_agg[y2], marker_color='red')])
+        fig_bar.update_layout(barmode='group', title=bar_title, template='plotly_dark')
+        st.plotly_chart(fig_bar, width="stretch")
+
+    with chart_col2:
+        if not passes_df.empty:
+            dist_agg = passes_df['Tactical_Bucket'].value_counts().reset_index()
+            dist_agg.columns = ['Tactical Focus', 'Count']
+            fig_pie = px.pie(dist_agg, names='Tactical Focus', values='Count', title="Passing Distribution Profile", template='plotly_dark', hole=0.4)
+            st.plotly_chart(fig_pie, width="stretch")
+
+    with st.expander("📥 Download Trend Data"):
+        col_c1, col_c2 = st.columns(2)
+        col_c1.download_button("Download Overview (CSV)", data=match_agg.to_csv(index=False).encode('utf-8'), file_name="Trend_Overview.csv", mime="text/csv")
+        if not passes_df.empty: col_c2.download_button("Download Pass Split (CSV)", data=dist_agg.to_csv(index=False).encode('utf-8'), file_name="Pass_Split.csv", mime="text/csv")
+
+    st.markdown("---")
+    analysis_text = ""
+    if 'Seasonal_Analysis' in agg_matches.columns:
+        valid_notes = agg_matches['Seasonal_Analysis'].dropna()
+        if not valid_notes.empty: analysis_text = valid_notes.iloc[0]
+
+    if analysis_text and str(analysis_text).strip() != "": st.info(analysis_text)
+    else: st.warning(f"No seasonal analysis logged in the database yet.")
+
+    st.markdown("---")
+    st.markdown("### 📝 Coach's Training Notes")
+    note_key = f"SeasonReport_{str(selected_season).replace(' ', '_')}"
+    
+    with st.form(key=f"form_{note_key}"):
+        coach_note = st.text_area("Coach's Summary Notes:", value=saved_notes.get(note_key, ""), height=200)
+        if st.form_submit_button("💾 Save Notes to Airtable"):
+            if save_note_to_airtable(note_key, "Season Report", str(selected_season), coach_note):
+                st.session_state["saved_notes"][note_key] = coach_note
+                st.success("Notes successfully synced to database!")
+            else: st.error("Failed to save notes.")
+
+# ==========================================
+# MODE 3: MATCH HUB (MONTHLY)
+# ==========================================
+elif report_mode == "Match Hub (Monthly)":
+    if season_matches_df.empty or season_actions_df.empty:
+        st.warning(f"No Match Event Data Found for the {selected_season} season yet. Awaiting Opta match-by-match event pipeline integration into Airtable.")
+        st.stop()
+        
+    st.sidebar.subheader("Select Month")
+    available_periods = [m for m in season_matches_df['Month_Year'].unique() if m != 'Unknown Month']
+    if not available_periods:
+        st.error(f"No valid match dates found for the {selected_season} season.")
+        st.stop()
+        
+    if st.session_state["selected_period_month"] not in available_periods:
+        st.session_state["selected_period_month"] = available_periods[0]
+        
+    selected_period = st.sidebar.selectbox("Month", available_periods, key="selected_period_month")
+    agg_matches = season_matches_df[season_matches_df['Month_Year'] == selected_period]
+    report_title = f"{selected_period} Performance Report"
+    analysis_title = "Monthly Performance Analysis"
+
+    agg_match_ids = agg_matches['Match_ID'].tolist()
+    agg_actions = season_actions_df[season_actions_df['Match_ID'].isin(agg_match_ids)]
+
+    has_psxg = agg_actions['PSxG'].sum() > 0
+
+    total_matches = len(agg_matches)
+    clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
+    
+    total_psxg = agg_actions['PSxG'].sum() if has_psxg else 0
+    total_goals_conceded = agg_actions['Goal_Conceded'].sum()
+    goals_prevented = total_psxg - total_goals_conceded if has_psxg else 0
+    
+    is_shot = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
+    shots_df = agg_actions[is_shot]
+    total_shots_faced = len(shots_df)
+    
+    total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False)])
+    save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
+
+    claim_sweep_actions = agg_actions[(agg_actions['Action_Category'] == 'Goal Keeper') & (agg_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Sweeper', case=False, na=False))]
+    total_high_claims = len(claim_sweep_actions)
+
+    passes_df = agg_actions[agg_actions['Action_Category'] == 'Pass']
+    total_passes = len(passes_df)
+    completed_passes = len(passes_df[passes_df['Outcome'] == 'Complete'])
+    pass_pct = (completed_passes / total_passes * 100) if total_passes > 0 else 0
+
+    long_balls = passes_df[passes_df['Tactical_Bucket'] == 'Play Beyond']
+    total_long_balls = len(long_balls)
+    completed_long_balls = len(long_balls[long_balls['Outcome'] == 'Complete'])
+    long_ball_pct = (completed_long_balls / total_long_balls * 100) if total_long_balls > 0 else 0
+
+    col_logo, col_title = st.columns([1, 8])
+    with col_logo: render_high_res_logo(80)
+    with col_title: st.markdown(f"<h1 style='margin-top: 10px;'>{report_title}</h1>", unsafe_allow_html=True)
+    
+    st.markdown("---")
+
+    st.markdown("### 🧤 Shot Stopping & Box Control")
+    if has_psxg:
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        col1.metric("Matches Played", total_matches)
+        col2.metric("Clean Sheets", clean_sheets)
+        col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
+        col4.metric("Expected Goals Prevented", f"{goals_prevented:+.2f}", delta="Positive Impact" if goals_prevented > 0 else "Underperformed", delta_color="normal" if goals_prevented > 0 else "inverse")
+        col5.metric("PSxG Faced", f"{total_psxg:.2f}")
+        col6.metric("High Claims/Sweeps", total_high_claims)
+    else:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Matches Played", total_matches)
+        col2.metric("Clean Sheets", clean_sheets)
+        col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
+        col4.metric("High Claims/Sweeps", total_high_claims)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 👟 Distribution Mastery")
+    d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+    d_col1.metric("Total Passes", total_passes)
+    d_col2.metric("Passing Accuracy", f"{pass_pct:.1f}%")
+    d_col3.metric("Long Balls Attempted", total_long_balls)
+    d_col4.metric("Long Ball Accuracy", f"{long_ball_pct:.1f}%")
+
+    st.markdown("---")
+    
+    if not agg_actions.empty:
+        if has_psxg:
+            st.markdown("### 📈 Form Tracker: PSxG Prevented")
+            match_agg_trend = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg_trend['Y_Value'] = (match_agg_trend['PSxG'] - match_agg_trend['Goals_Conceded']).round(2)
+            title = "Game-by-Game Form (PSxG Prevented)"
+            y_title = "PSxG Prevented"
+        else:
+            st.markdown("### 📈 Form Tracker: Goals Conceded")
+            match_agg_trend = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg_trend['Y_Value'] = match_agg_trend['Goals_Conceded']
+            title = "Game-by-Game Form (Goals Conceded)"
+            y_title = "Goals Conceded"
+
+        trend_df = pd.merge(match_agg_trend, agg_matches[['Match_ID', 'Date_Parsed', 'Opponent', 'Venue', 'Month_Year']], on='Match_ID', how='left')
+        trend_df = trend_df.sort_values('Date_Parsed')
+        
+        def format_ha(row):
+            ha_str = "(H)" if str(row.get('Venue', 'Home')).strip().title() != "Away" else "(A)"
+            return f"{row['Opponent']} {ha_str}"
+        trend_df['X_Label'] = trend_df.apply(format_ha, axis=1)
+        x_data, y_data, custom_data = trend_df['X_Label'], trend_df['Y_Value'], trend_df['Match_ID']
+
+        fig_trend = go.Figure()
+        fig_trend.add_shape(type="line", x0=-0.5, x1=len(x_data)-0.5, y0=0, y1=0, line=dict(color="gray", width=2, dash="dash"))
+        
+        if has_psxg:
+            marker_colors = ['#00FF00' if val >= 0 else 'red' for val in y_data]
+            hover_template = "<b>%{x}</b><br>PSxG Prevented: %{y:+.2f}<extra></extra>"
+        else:
+            marker_colors = ['#00FF00' if val <= 1 else 'red' for val in y_data]
+            hover_template = "<b>%{x}</b><br>Goals Conceded: %{y}<extra></extra>"
+
+        fig_trend.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines+markers', marker=dict(size=14, color=marker_colors, line=dict(color='white', width=2)), line=dict(color='#00BFFF', width=3), customdata=custom_data, hovertemplate=hover_template))
+        
+        current_max = max(3, (y_data.abs().max() if not y_data.empty else 0) * 1.2)
+        fig_trend.update_layout(title=title, yaxis=dict(range=[-current_max if has_psxg else 0, current_max], title=y_title, zeroline=False), xaxis=dict(title="Match"), template='plotly_dark', height=350, clickmode='event+select', margin=dict(l=20, r=20, t=40, b=20))
+        
+        st.info("👆 Click on any marker to jump to that specific report.")
+        trend_selection = st.plotly_chart(fig_trend, width="stretch", on_select="rerun", selection_mode="points", key="trend_chart_monthly")
+        
+        if trend_selection and "selection" in trend_selection and "points" in trend_selection["selection"]:
+            points = trend_selection["selection"]["points"]
+            if len(points) > 0 and points[0].get("pointIndex") is not None:
+                clicked_idx = points[0]["pointIndex"]
+                st.session_state["app_mode"], st.session_state["selected_match"] = "Single Match", trend_df.iloc[clicked_idx]['Match_ID']
+                st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 📅 Monthly Match Log")
+    
+    if agg_matches.empty:
+        st.info("No matches scheduled or played in this month yet.")
+    else:
+        for _, match_row in agg_matches.sort_values('Date_Parsed').iterrows():
+            date_str = match_row['Date_Parsed'].strftime('%Y-%m-%d') if pd.notna(match_row['Date_Parsed']) else 'Unknown Date'
+            team, opp, t_score, o_score, m_id = str(match_row.get('Team_GK', 'KR Reykjavik')), str(match_row.get('Opponent', 'Opponent')), str(match_row.get('Team_Score', '-')), str(match_row.get('Opponent_Score', '-')), match_row['Match_ID']
+            
+            col_text, col_btn = st.columns([6, 2])
+            with col_text:
+                match_str = f"<b>[{date_str}]</b> &nbsp; {opp} &nbsp;<b>{o_score} - {t_score}</b>&nbsp; {team}" if str(match_row.get('Venue', 'Home')).strip().title() == 'Away' else f"<b>[{date_str}]</b> &nbsp; {team} &nbsp;<b>{t_score} - {o_score}</b>&nbsp; {opp}"
+                st.markdown(f"<div style='padding-top: 10px; font-size: 1.1rem;'>{match_str}</div>", unsafe_allow_html=True)
+            with col_btn:
+                st.button("🔍 Go to Report", key=f"btn_{m_id}", on_click=set_match_view, args=(m_id,))
+
+    st.markdown("---")
+    st.markdown("### Profile Breakdowns")
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        if has_psxg:
+            match_agg = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            y1, y2, y1_name, y2_name, bar_title = 'PSxG', 'Goals_Conceded', 'PSxG Faced', 'Goals Conceded', 'PSxG vs Goals Conceded per Match'
+        else:
+            match_agg = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            shots_agg = agg_actions[agg_actions['Outcome'].astype(str).str.contains('Shot|Goal|Save', case=False, na=False)].groupby('Match_ID').size().reset_index(name='Shots_Faced')
+            match_agg = pd.merge(match_agg, shots_agg, on='Match_ID', how='left').fillna(0)
+            y1, y2, y1_name, y2_name, bar_title = 'Shots_Faced', 'Goals_Conceded', 'Shots Faced', 'Goals Conceded', 'Shots Faced vs Goals Conceded per Match'
+
+        merge_cols = ['Match_ID', 'Date_Parsed', 'Opponent']
+        if 'Venue' in agg_matches.columns: merge_cols.append('Venue')
+        match_agg = pd.merge(match_agg, agg_matches[merge_cols], on='Match_ID', how='left')
+        
+        def create_match_label(row):
+            d, v = row['Date_Parsed'].strftime('%m/%d'), str(row.get('Venue', 'Home')).strip().title()
+            return f"{d} {'@' if v == 'Away' else 'vs'} {row['Opponent']}"
+            
+        match_agg['Match_Label'] = match_agg.apply(create_match_label, axis=1)
+        match_agg = match_agg.sort_values('Date_Parsed')
+
+        fig_bar = go.Figure(data=[go.Bar(name=y1_name, x=match_agg['Match_Label'], y=match_agg[y1], marker_color='#00BFFF'), go.Bar(name=y2_name, x=match_agg['Match_Label'], y=match_agg[y2], marker_color='red')])
+        fig_bar.update_layout(barmode='group', title=bar_title, template='plotly_dark')
+        st.plotly_chart(fig_bar, width="stretch")
+
+    with chart_col2:
+        if not passes_df.empty:
+            dist_agg = passes_df['Tactical_Bucket'].value_counts().reset_index()
+            dist_agg.columns = ['Tactical Focus', 'Count']
+            st.plotly_chart(px.pie(dist_agg, names='Tactical Focus', values='Count', title="Passing Distribution Profile", template='plotly_dark', hole=0.4), width="stretch")
+
+    with st.expander("📥 Download Trend Data"):
+        col_c1, col_c2 = st.columns(2)
+        col_c1.download_button("Download Overview (CSV)", data=match_agg.to_csv(index=False).encode('utf-8'), file_name="Overview.csv", mime="text/csv")
+        if not passes_df.empty: col_c2.download_button("Download Pass Split (CSV)", data=dist_agg.to_csv(index=False).encode('utf-8'), file_name="Pass_Split.csv", mime="text/csv")
+
+    st.markdown("---")
+    analysis_text = ""
+    if 'Monthly_Analysis' in agg_matches.columns:
+        valid_notes = agg_matches['Monthly_Analysis'].dropna()
+        if not valid_notes.empty: analysis_text = valid_notes.iloc[0]
+
+    if analysis_text and str(analysis_text).strip() != "": st.info(analysis_text)
+    else: st.warning(f"No monthly analysis logged in the database yet.")
+
+    st.markdown("---")
+    st.markdown("### 📝 Coach's Training Notes")
+    note_key = f"MatchHub_{str(selected_period).replace(' ', '_')}"
+    
+    with st.form(key=f"form_{note_key}"):
+        coach_note = st.text_area("Coach's Summary Notes:", value=saved_notes.get(note_key, ""), height=200)
+        if st.form_submit_button("💾 Save Notes to Airtable"):
+            if save_note_to_airtable(note_key, "Monthly Report", str(selected_period), coach_note):
+                st.session_state["saved_notes"][note_key] = coach_note
+                st.success("Notes successfully synced to database!")
+            else: st.error("Failed to save notes.")
+
+# ==========================================
+# MODE 4: SINGLE MATCH REPORT
 # ==========================================
 elif report_mode == "Single Match":
     if season_matches_df.empty or season_actions_df.empty:
@@ -372,11 +773,13 @@ elif report_mode == "Single Match":
     match_info = season_matches_df[season_matches_df['Match_ID'] == selected_match].iloc[0]
     match_all_actions = season_actions_df[season_actions_df['Match_ID'] == selected_match]
 
+    has_psxg = match_all_actions['PSxG'].sum() > 0
+
     match_passes = match_all_actions[match_all_actions['Action_Category'] == 'Pass'].copy()
     valid_passes = match_passes.dropna(subset=['Pass_Start_X', 'Pass_End_X']).copy()
     valid_passes.reset_index(drop=True, inplace=True) 
 
-    is_shot = match_all_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | match_all_actions['PSxG'].notna()
+    is_shot = match_all_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | (match_all_actions['PSxG'].notna() if has_psxg else False)
     match_shots = match_all_actions[is_shot].copy()
     valid_shots = match_shots.dropna(subset=['Pass_Start_X', 'Pass_Start_Y']).copy()
     valid_shots.reset_index(drop=True, inplace=True)
@@ -426,15 +829,22 @@ elif report_mode == "Single Match":
 
     # SHOT STOPPING
     st.markdown("## 🧤 Shot Stopping")
-    total_psxg = match_all_actions['PSxG'].sum()
+    total_psxg = match_all_actions['PSxG'].sum() if has_psxg else 0
     total_goals = match_all_actions['Goal_Conceded'].sum()
-    goals_prevented = total_psxg - total_goals
+    total_saves = len(valid_shots[valid_shots['Outcome'].astype(str).str.contains('Save', case=False, na=False)])
 
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    kpi1.metric(label="Total Shots Faced", value=len(valid_shots))
-    kpi2.metric(label="Total PSxG Faced", value=f"{total_psxg:.2f}")
-    kpi3.metric(label="Goals Conceded", value=int(total_goals))
-    kpi4.metric(label="Goals Prevented", value=f"{goals_prevented:+.2f}", delta="Shot Stopping Impact" if goals_prevented >= 0 else "Underperformed Expected", delta_color="normal" if goals_prevented >= 0 else "inverse")
+    if has_psxg:
+        goals_prevented = total_psxg - total_goals
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        kpi1.metric(label="Total Shots Faced", value=len(valid_shots))
+        kpi2.metric(label="Total PSxG Faced", value=f"{total_psxg:.2f}")
+        kpi3.metric(label="Goals Conceded", value=int(total_goals))
+        kpi4.metric(label="Goals Prevented", value=f"{goals_prevented:+.2f}", delta="Shot Stopping Impact" if goals_prevented >= 0 else "Underperformed Expected", delta_color="normal" if goals_prevented >= 0 else "inverse")
+    else:
+        kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric(label="Total Shots Faced", value=len(valid_shots))
+        kpi2.metric(label="Total Saves", value=total_saves)
+        kpi3.metric(label="Goals Conceded", value=int(total_goals))
 
     shot_pitch, shot_video = st.columns([2.5, 1.5]) 
     with shot_pitch:
@@ -479,7 +889,11 @@ elif report_mode == "Single Match":
 
             raw_notes = row.get('Scout_Analysis', 'No notes.')
             wrapped_notes = "<br>".join(textwrap.wrap(str(raw_notes), width=50))
-            hover_text = f"<b>Minute: {row.get('Match_Minute')}</b><br>PSxG: {row.get('PSxG', 0)}<br>Distance: {distance_str}<br>---<br><i>{wrapped_notes}</i>"
+            
+            if has_psxg:
+                hover_text = f"<b>Minute: {row.get('Match_Minute')}</b><br>PSxG: {row.get('PSxG', 0)}<br>Distance: {distance_str}<br>---<br><i>{wrapped_notes}</i>"
+            else:
+                hover_text = f"<b>Minute: {row.get('Match_Minute')}</b><br>Outcome: {row.get('Outcome')}<br>Distance: {distance_str}<br>---<br><i>{wrapped_notes}</i>"
 
             if start_x > 60:
                 start_x = 120 - start_x
@@ -519,7 +933,7 @@ elif report_mode == "Single Match":
             col_dl2.download_button("Download Data (CSV)", data=valid_shots.to_csv(index=False).encode('utf-8'), file_name="Shot_Data.csv", mime="text/csv")
 
     with shot_video:
-        st.markdown("### Shot Video Clip")
+        st.markdown("### Shot Context")
         if selected_shot_idx is not None and selected_shot_idx < len(valid_shots):
             if st.button("🔙 Clear Shot Selection", key="clear_shot"):
                 st.session_state.shot_chart = {"selection": {"points": [], "box": [], "lasso": []}}; st.rerun()
@@ -593,21 +1007,26 @@ elif report_mode == "Single Match":
                 st.plotly_chart(fig_goal, width="stretch", key="goal_mouth_chart")
 
             sel_outcome = str(selected_row.get('Outcome', 'Unknown'))
-            sel_psxg = pd.to_numeric(selected_row.get('PSxG'), errors='coerce')
-            sel_psxg_str = f"{sel_psxg:.2f}" if pd.notna(sel_psxg) else "N/A"
             sel_minute = str(selected_row.get('Match_Minute', 'N/A'))
 
             st.markdown("#### Shot Details")
-            mc1, mc2 = st.columns(2)
-            mc1.metric("Minute", f"{sel_minute}'")
-            mc2.metric("Outcome", sel_outcome)
-            
-            mc3, mc4 = st.columns(2)
-            mc3.metric("PSxG", sel_psxg_str)
-            mc4.metric("Distance", sel_dist_str)
+            if has_psxg:
+                sel_psxg = pd.to_numeric(selected_row.get('PSxG'), errors='coerce')
+                sel_psxg_str = f"{sel_psxg:.2f}" if pd.notna(sel_psxg) else "N/A"
+                mc1, mc2 = st.columns(2)
+                mc1.metric("Minute", f"{sel_minute}'")
+                mc2.metric("Outcome", sel_outcome)
+                mc3, mc4 = st.columns(2)
+                mc3.metric("PSxG", sel_psxg_str)
+                mc4.metric("Distance", sel_dist_str)
+            else:
+                mc1, mc2, mc3 = st.columns(3)
+                mc1.metric("Minute", f"{sel_minute}'")
+                mc2.metric("Outcome", sel_outcome)
+                mc3.metric("Distance", sel_dist_str)
 
         else:
-            st.info("👆 Click on any shot line to load the video.")
+            st.info("👆 Click on any shot line to load its context.")
 
     # --- SWEEPER KEEPER MAP (Left-Aligned) ---
     st.markdown("---")
@@ -617,6 +1036,18 @@ elif report_mode == "Single Match":
     swp_kpi2.metric("High Claims", len(def_actions[def_actions['Outcome'].astype(str).str.contains('Claim', case=False, na=False)]))
     swp_kpi3.metric("Sweeping / Clearances", len(def_actions[def_actions['Outcome'].astype(str).str.contains('Clearance|Sweeper', case=False, na=False)]))
     
+    # NEW OPTA AGGREGATE KPIS
+    pickups = int(match_all_actions['Keeper_Pick_Ups'].max()) if 'Keeper_Pick_Ups' in match_all_actions.columns and not match_all_actions['Keeper_Pick_Ups'].isna().all() else 0
+    throws = int(match_all_actions['Keeper_Throws'].max()) if 'Keeper_Throws' in match_all_actions.columns and not match_all_actions['Keeper_Throws'].isna().all() else 0
+    launches = int(match_all_actions['Launches'].max()) if 'Launches' in match_all_actions.columns and not match_all_actions['Launches'].isna().all() else 0
+    diving = int(match_all_actions['Diving_Saves'].max()) if 'Diving_Saves' in match_all_actions.columns and not match_all_actions['Diving_Saves'].isna().all() else 0
+
+    opt_kpi1, opt_kpi2, opt_kpi3, opt_kpi4 = st.columns(4)
+    opt_kpi1.metric("Keeper Pick-Ups", pickups)
+    opt_kpi2.metric("Keeper Throws", throws)
+    opt_kpi3.metric("Launches", launches)
+    opt_kpi4.metric("Diving Saves", diving)
+
     swp_pitch, swp_info = st.columns([2.5, 1.5])
     with swp_pitch:
         selected_swp_idx = None
@@ -688,8 +1119,9 @@ elif report_mode == "Single Match":
     valid_passes['Is_Dead_Ball'] = valid_passes['Play_Pattern'].astype(str).str.contains('Goal Kick|Free Kick|Corner|Penalty', case=False)
     valid_passes['Play_State'] = valid_passes['Is_Dead_Ball'].map({True: 'Dead Ball', False: 'Open Play'})
     
-    total_passes = len(valid_passes)
-    completed_passes = len(valid_passes[valid_passes['Outcome'] == 'Complete'])
+    # Calculate KPIs from ALL passes (including Ólafsson's synthetic ones)
+    total_passes = len(match_passes)
+    completed_passes = len(match_passes[match_passes['Outcome'] == 'Complete'])
     pass_accuracy = (completed_passes / total_passes * 100) if total_passes > 0 else 0
 
     p_kpi1, p_kpi2, p_kpi3 = st.columns(3)
@@ -811,8 +1243,38 @@ elif report_mode == "Single Match":
         else:
             st.info("👆 Click on any pass on the pitch to load its context.")
 
-    # --- RESTORED: DISTRIBUTION ANALYTICS AND RADAR CHART ---
-    st.markdown("### Distribution Analytics & Overall Involvement")
+    st.markdown("### Advanced Opta Distribution Analytics")
+    
+    # Advanced Opta Charts Section
+    c1, c2 = st.columns(2)
+    with c1:
+        if 'Pass_Direction' in valid_passes.columns and not valid_passes['Pass_Direction'].isna().all():
+            dir_df = valid_passes.groupby(['Pass_Direction', 'Outcome']).size().reset_index(name='Count')
+            fig_dir = px.bar(dir_df, x='Pass_Direction', y='Count', color='Outcome', title="Passes by Direction", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark")
+            st.plotly_chart(fig_dir, width="stretch")
+        else:
+            st.info("Pass direction data not available.")
+            
+    with c2:
+        if 'Pass_Length' in valid_passes.columns and not valid_passes['Pass_Length'].isna().all():
+            fig_len = px.histogram(valid_passes, x='Pass_Length', color='Outcome', nbins=15, title="Pass Length Distribution (m)", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark")
+            fig_len.add_vline(x=32, line_dash="dash", line_color="gray", annotation_text="Long Ball Threshold")
+            st.plotly_chart(fig_len, width="stretch")
+        else:
+            st.info("Pass length data not available.")
+
+    long_passes = valid_passes[valid_passes['Pass_Length'] > 32].copy() if 'Pass_Length' in valid_passes.columns else pd.DataFrame()
+    if not long_passes.empty:
+        st.markdown("#### Long Pass Attempts (>32m)")
+        fig_long = go.Figure()
+        for i, row in long_passes.iterrows():
+            color = '#00FF00' if row['Outcome'] == 'Complete' else '#FF3333'
+            fig_long.add_trace(go.Scatter(x=[row['Pass_Start_X'], row['Pass_End_X']], y=[row['Match_Minute'], row['Match_Minute']], mode='lines+markers+text', text=["", f"{int(row['Pass_Length'])}m"], textposition="middle right", line=dict(color=color, width=2), showlegend=False))
+        fig_long.update_layout(template="plotly_dark", yaxis=dict(autorange="reversed", title="Match Minute"), xaxis=dict(title="Pitch X Coordinate (0 = Own Goal, 120 = Opponent Goal)", range=[-5, 125]))
+        fig_long.add_vline(x=60, line_dash="dash", line_color="gray", annotation_text="Halfway Line")
+        st.plotly_chart(fig_long, width="stretch")
+
+    st.markdown("### Tactical Intent & Overall Involvement")
     chart_col1, chart_col2 = st.columns(2)
     
     with chart_col1:
@@ -825,9 +1287,7 @@ elif report_mode == "Single Match":
         if not match_all_actions.empty:
             actions_df_counts = match_all_actions['Action_Category'].value_counts().reset_index()
             actions_df_counts.columns = ['Action', 'Count']
-            
             actions_df_counts['Action'] = actions_df_counts['Action'].replace({'Pass': 'Distribution'})
-            
             max_val = actions_df_counts['Count'].max()
             
             fig_radar = px.line_polar(
@@ -836,7 +1296,6 @@ elif report_mode == "Single Match":
                 color_discrete_sequence=['#00BFFF']
             )
             fig_radar.update_traces(fill='toself')
-            
             fig_radar.update_layout(
                 polar=dict(
                     radialaxis=dict(
@@ -845,20 +1304,26 @@ elif report_mode == "Single Match":
                     )
                 )
             )
-            
             st.plotly_chart(fig_radar, width="stretch")
 
     st.markdown("### Situational Breakdown")
-    c1, c2 = st.columns(2)
-    with c1:
-        if not valid_passes.empty:
-            pressure_df = valid_passes.groupby(['Under_Pressure', 'Outcome']).size().reset_index(name='Count')
-            pressure_df['Pressure Label'] = pressure_df['Under_Pressure'].map({1: 'Pressured', 0: 'Uncontested'})
-            st.plotly_chart(px.bar(pressure_df, x='Pressure Label', y='Count', color='Outcome', title="Accuracy Under Pressure", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
-    with c2:
+    has_pressure = valid_passes['Under_Pressure'].sum() > 0
+    
+    if has_pressure:
+        c1, c2 = st.columns(2)
+        with c1:
+            if not valid_passes.empty:
+                pressure_df = valid_passes.groupby(['Under_Pressure', 'Outcome']).size().reset_index(name='Count')
+                pressure_df['Pressure Label'] = pressure_df['Under_Pressure'].map({1: 'Pressured', 0: 'Uncontested'})
+                st.plotly_chart(px.bar(pressure_df, x='Pressure Label', y='Count', color='Outcome', title="Accuracy Under Pressure", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
+        with c2:
+            if not valid_passes.empty:
+                phase_df = valid_passes.groupby(['Play_State', 'Outcome']).size().reset_index(name='Count')
+                st.plotly_chart(px.bar(phase_df, x='Play_State', y='Count', color='Outcome', title="Dead Ball vs Open Play", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
+    else:
         if not valid_passes.empty:
             phase_df = valid_passes.groupby(['Play_State', 'Outcome']).size().reset_index(name='Count')
-            st.plotly_chart(px.bar(phase_df, x='Play_State', y='Count', color='Outcome', title="Dead Ball vs Open Play", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
+            st.plotly_chart(px.bar(phase_df, x='Play_State', y='Count', color='Outcome', title="Dead Ball vs Open Play Passing Split", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
 
     st.markdown("---")
     st.markdown("## 📝 Overall Match Analysis")
@@ -884,187 +1349,21 @@ elif report_mode == "Single Match":
                 st.error("Failed to save notes. Check your Airtable credentials.")
 
 # ==========================================
-# MODE 3: MATCH HUB (MONTHLY)
-# ==========================================
-else:
-    if season_matches_df.empty or season_actions_df.empty:
-        st.warning(f"No Match Event Data Found for the {selected_season} season yet. Awaiting Opta match-by-match event pipeline integration into Airtable.")
-        st.stop()
-        
-    st.sidebar.subheader("Select Month")
-    available_periods = [m for m in season_matches_df['Month_Year'].unique() if m != 'Unknown Month']
-    if not available_periods:
-        st.error(f"No valid match dates found for the {selected_season} season.")
-        st.stop()
-        
-    if st.session_state["selected_period_month"] not in available_periods:
-        st.session_state["selected_period_month"] = available_periods[0]
-        
-    selected_period = st.sidebar.selectbox("Month", available_periods, key="selected_period_month")
-    agg_matches = season_matches_df[season_matches_df['Month_Year'] == selected_period]
-    report_title = f"{selected_period} Performance Report"
-    analysis_title = "Monthly Performance Analysis"
-
-    agg_match_ids = agg_matches['Match_ID'].tolist()
-    agg_actions = season_actions_df[season_actions_df['Match_ID'].isin(agg_match_ids)]
-
-    total_matches = len(agg_matches)
-    clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
-    
-    total_psxg = agg_actions['PSxG'].sum()
-    total_goals_conceded = agg_actions['Goal_Conceded'].sum()
-    goals_prevented = total_psxg - total_goals_conceded
-    
-    is_shot = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | agg_actions['PSxG'].notna()
-    shots_df = agg_actions[is_shot]
-    total_shots_faced = len(shots_df)
-    
-    total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False)])
-    save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
-
-    claim_sweep_actions = agg_actions[(agg_actions['Action_Category'] == 'Goal Keeper') & (agg_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Sweeper', case=False, na=False))]
-    total_high_claims = len(claim_sweep_actions)
-
-    passes_df = agg_actions[agg_actions['Action_Category'] == 'Pass']
-    total_passes = len(passes_df)
-    completed_passes = len(passes_df[passes_df['Outcome'] == 'Complete'])
-    pass_pct = (completed_passes / total_passes * 100) if total_passes > 0 else 0
-
-    long_balls = passes_df[passes_df['Tactical_Bucket'] == 'Play Beyond']
-    total_long_balls = len(long_balls)
-    completed_long_balls = len(long_balls[long_balls['Outcome'] == 'Complete'])
-    long_ball_pct = (completed_long_balls / total_long_balls * 100) if total_long_balls > 0 else 0
-
-    col_logo, col_title = st.columns([1, 8])
-    with col_logo: render_high_res_logo(80)
-    with col_title: st.markdown(f"<h1 style='margin-top: 10px;'>{report_title}</h1>", unsafe_allow_html=True)
-    
-    st.markdown("---")
-
-    st.markdown("### 🧤 Shot Stopping & Box Control")
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-    col1.metric("Matches Played", total_matches)
-    col2.metric("Clean Sheets", clean_sheets)
-    col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
-    col4.metric("Expected Goals Prevented", f"{goals_prevented:+.2f}", delta="Positive Impact" if goals_prevented > 0 else "Underperformed", delta_color="normal" if goals_prevented > 0 else "inverse")
-    col5.metric("PSxG Faced", f"{total_psxg:.2f}")
-    col6.metric("High Claims/Sweeps", total_high_claims)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("### 👟 Distribution Mastery")
-    d_col1, d_col2, d_col3, d_col4 = st.columns(4)
-    d_col1.metric("Total Passes", total_passes)
-    d_col2.metric("Passing Accuracy", f"{pass_pct:.1f}%")
-    d_col3.metric("Long Balls Attempted", total_long_balls)
-    d_col4.metric("Long Ball Accuracy", f"{long_ball_pct:.1f}%")
-
-    st.markdown("---")
-    st.markdown("### 📈 Form Tracker: PSxG Prevented")
-    
-    if not agg_actions.empty:
-        match_agg_trend = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
-        match_agg_trend['PSxG_Prevented'] = (match_agg_trend['PSxG'] - match_agg_trend['Goals_Conceded']).round(2)
-        trend_df = pd.merge(match_agg_trend, agg_matches[['Match_ID', 'Date_Parsed', 'Opponent', 'Venue', 'Month_Year']], on='Match_ID', how='left')
-        
-        trend_df = trend_df.sort_values('Date_Parsed')
-        def format_ha(row):
-            ha_str = "(H)" if str(row.get('Venue', 'Home')).strip().title() != "Away" else "(A)"
-            return f"{row['Opponent']} {ha_str}"
-        trend_df['X_Label'] = trend_df.apply(format_ha, axis=1)
-        x_data, y_data, custom_data = trend_df['X_Label'], trend_df['PSxG_Prevented'], trend_df['Match_ID']
-        title, min_y_scale = "Game-by-Game Form (PSxG Prevented)", 3 
-
-        fig_trend = go.Figure()
-        fig_trend.add_shape(type="line", x0=-0.5, x1=len(x_data)-0.5, y0=0, y1=0, line=dict(color="gray", width=2, dash="dash"))
-        fig_trend.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines+markers', marker=dict(size=14, color=['#00FF00' if val >= 0 else 'red' for val in y_data], line=dict(color='white', width=2)), line=dict(color='#00BFFF', width=3), customdata=custom_data, hovertemplate="<b>%{x}</b><br>PSxG Prevented: %{y:+.2f}<extra></extra>"))
-        current_max = max(min_y_scale, (y_data.abs().max() if not y_data.empty else 0) * 1.2)
-        
-        fig_trend.update_layout(title=title, yaxis=dict(range=[-current_max, current_max], title="PSxG Prevented", zeroline=False), xaxis=dict(title="Match"), template='plotly_dark', height=350, clickmode='event+select', margin=dict(l=20, r=20, t=40, b=20))
-        
-        st.info("👆 Click on any marker to jump to that specific report.")
-        trend_selection = st.plotly_chart(fig_trend, width="stretch", on_select="rerun", selection_mode="points", key="trend_chart_monthly")
-        
-        if trend_selection and "selection" in trend_selection and "points" in trend_selection["selection"]:
-            points = trend_selection["selection"]["points"]
-            if len(points) > 0 and points[0].get("pointIndex") is not None:
-                clicked_idx = points[0]["pointIndex"]
-                st.session_state["app_mode"], st.session_state["selected_match"] = "Single Match", trend_df.iloc[clicked_idx]['Match_ID']
-                st.rerun()
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("### 📅 Monthly Match Log")
-    
-    if agg_matches.empty:
-        st.info("No matches scheduled or played in this month yet.")
-    else:
-        for _, match_row in agg_matches.sort_values('Date_Parsed').iterrows():
-            date_str = match_row['Date_Parsed'].strftime('%Y-%m-%d') if pd.notna(match_row['Date_Parsed']) else 'Unknown Date'
-            team, opp, t_score, o_score, m_id = str(match_row.get('Team_GK', 'KR Reykjavik')), str(match_row.get('Opponent', 'Opponent')), str(match_row.get('Team_Score', '-')), str(match_row.get('Opponent_Score', '-')), match_row['Match_ID']
-            
-            col_text, col_btn = st.columns([6, 2])
-            with col_text:
-                match_str = f"<b>[{date_str}]</b> &nbsp; {opp} &nbsp;<b>{o_score} - {t_score}</b>&nbsp; {team}" if str(match_row.get('Venue', 'Home')).strip().title() == 'Away' else f"<b>[{date_str}]</b> &nbsp; {team} &nbsp;<b>{t_score} - {o_score}</b>&nbsp; {opp}"
-                st.markdown(f"<div style='padding-top: 10px; font-size: 1.1rem;'>{match_str}</div>", unsafe_allow_html=True)
-            with col_btn:
-                st.button("🔍 Go to Report", key=f"btn_{m_id}", on_click=set_match_view, args=(m_id,))
-
-    st.markdown("---")
-    st.markdown("### Profile Breakdowns")
-    chart_col1, chart_col2 = st.columns(2)
-
-    with chart_col1:
-        match_agg = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
-        merge_cols = ['Match_ID', 'Date_Parsed', 'Opponent']
-        if 'Venue' in agg_matches.columns: merge_cols.append('Venue')
-        match_agg = pd.merge(match_agg, agg_matches[merge_cols], on='Match_ID', how='left')
-        
-        def create_match_label(row):
-            d, v = row['Date_Parsed'].strftime('%m/%d'), str(row.get('Venue', 'Home')).strip().title()
-            return f"{d} {'@' if v == 'Away' else 'vs'} {row['Opponent']}"
-            
-        match_agg['Match_Label'] = match_agg.apply(create_match_label, axis=1)
-        match_agg = match_agg.sort_values('Date_Parsed')
-
-        fig_bar = go.Figure(data=[go.Bar(name='PSxG Faced', x=match_agg['Match_Label'], y=match_agg['PSxG'], marker_color='#00BFFF'), go.Bar(name='Goals Conceded', x=match_agg['Match_Label'], y=match_agg['Goals_Conceded'], marker_color='red')])
-        fig_bar.update_layout(barmode='group', title='PSxG vs Goals Conceded per Match', template='plotly_dark')
-        st.plotly_chart(fig_bar, width="stretch")
-
-    with chart_col2:
-        if not passes_df.empty:
-            dist_agg = passes_df['Tactical_Bucket'].value_counts().reset_index()
-            dist_agg.columns = ['Tactical Focus', 'Count']
-            st.plotly_chart(px.pie(dist_agg, names='Tactical Focus', values='Count', title="Passing Distribution Profile", template='plotly_dark', hole=0.4), width="stretch")
-
-    with st.expander("📥 Download Trend Data"):
-        col_c1, col_c2 = st.columns(2)
-        col_c1.download_button("Download PSxG/Goals (CSV)", data=match_agg.to_csv(index=False).encode('utf-8'), file_name="PSxG_Goals.csv", mime="text/csv")
-        if not passes_df.empty: col_c2.download_button("Download Pass Split (CSV)", data=dist_agg.to_csv(index=False).encode('utf-8'), file_name="Pass_Split.csv", mime="text/csv")
-
-    st.markdown("---")
-    analysis_text = ""
-    if 'Monthly_Analysis' in agg_matches.columns:
-        valid_notes = agg_matches['Monthly_Analysis'].dropna()
-        if not valid_notes.empty: analysis_text = valid_notes.iloc[0]
-
-    if analysis_text and str(analysis_text).strip() != "": st.info(analysis_text)
-    else: st.warning(f"No monthly analysis logged in the database yet.")
-
-    st.markdown("---")
-    st.markdown("### 📝 Coach's Training Notes")
-    note_key = f"{report_mode.replace(' ', '')}_{str(selected_period).replace(' ', '_')}"
-    
-    with st.form(key=f"form_{note_key}"):
-        coach_note = st.text_area("Coach's Summary Notes:", value=saved_notes.get(note_key, ""), height=200)
-        if st.form_submit_button("💾 Save Notes to Airtable"):
-            if save_note_to_airtable(note_key, report_mode, str(selected_period), coach_note):
-                st.session_state["saved_notes"][note_key] = coach_note
-                st.success("Notes successfully synced to database!")
-            else: st.error("Failed to save notes.")
-
-# ==========================================
 # EXPORT REPORT BUTTONS
 # ==========================================
 st.sidebar.markdown("---")
 st.sidebar.subheader("📥 Export Full Report")
-st.sidebar.markdown('<a href="javascript:window.print()" style="display:block; width:100%; text-align:center; padding:0.5rem; background-color:#FF4B4B; color:white; border-radius:4px; text-decoration:none; font-weight:bold; margin-bottom: 0.5rem;">🖨️ Save as PDF</a>', unsafe_allow_html=True)
-st.sidebar.download_button("🌐 Download Interactive HTML", data=generate_html_report([fig_shots, fig_sweeper, fig_passes] if report_mode == "Single Match" else ([fig_gki_radar, fig_scatter] if report_mode == "League Benchmark (Opta)" else [fig_trend, fig_bar]), "Report"), file_name=f"Report.html", mime="text/html", width="stretch")
+st.sidebar.markdown('<a href="javascript:window.print()" target="_self" style="display:block; width:100%; text-align:center; padding:0.5rem; background-color:#FF4B4B; color:white; border-radius:4px; text-decoration:none; font-weight:bold; margin-bottom: 0.5rem;">🖨️ Save as PDF</a>', unsafe_allow_html=True)
+
+if report_mode == "Single Match":
+    figs_to_export = []
+    for fig_name in ['fig_shots', 'fig_sweeper', 'fig_passes', 'fig_bar', 'fig_radar', 'fig_dir', 'fig_len', 'fig_long']:
+        if fig_name in locals():
+            figs_to_export.append(locals()[fig_name])
+    html_export = generate_html_report(figs_to_export, "Match Report")
+elif report_mode == "League Benchmark (Opta)":
+    html_export = generate_html_report([fig_gki_radar, fig_scatter] if 'fig_gki_radar' in locals() else [], "League Benchmark Report")
+else:
+    html_export = generate_html_report([fig_trend, fig_bar, fig_pie] if 'fig_trend' in locals() else [fig_bar, fig_pie] if 'fig_bar' in locals() else [], "Aggregated Report")
+
+st.sidebar.download_button("🌐 Download Interactive HTML", data=html_export, file_name="Report.html", mime="text/html", width="stretch")

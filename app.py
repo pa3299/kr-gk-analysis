@@ -865,9 +865,20 @@ elif report_mode == "Single Match":
 
         for i, row in valid_shots.iterrows():
             is_active = (selected_shot_idx == i)
-            if row.get('Goal_Conceded') == 1: base_color = 'red'
-            elif 'Save' in str(row.get('Action_Category')) or 'Save' in str(row.get('Outcome')): base_color = '#00FF00' 
-            else: base_color = 'lightgray'
+            
+            # Force everything to lowercase for bulletproof matching
+            outcome_str = str(row.get('Outcome', '')).lower()
+            cat_str = str(row.get('Action_Category', '')).lower()
+            
+            # 🔥 Fully bulletproof color logic
+            if row.get('Goal_Conceded') == 1 or 'goal' in outcome_str: 
+                base_color = 'red'
+            elif 'block' in outcome_str or 'off_target' in outcome_str or 'off target' in outcome_str or 'miss' in cat_str:
+                base_color = 'white'    
+            elif 'save' in outcome_str or 'save' in cat_str: 
+                base_color = '#00FF00'  
+            else: 
+                base_color = 'white'
 
             if is_active: line_color, line_width, opacity = '#00BFFF', 5, 1.0
             else: line_color, line_width = base_color, 3; opacity = 0.3 if selected_shot_idx is not None else 1.0
@@ -879,7 +890,7 @@ elif report_mode == "Single Match":
 
             if pd.isna(start_x): start_x = 0
             if pd.isna(start_y): start_y = 0
-            if pd.isna(end_x): end_x = start_x 
+            if pd.isna(end_x): end_x = 120  # Point shots to the goal line
             if pd.isna(end_y): end_y = start_y
 
             distance_str = "Unknown"
@@ -986,11 +997,23 @@ elif report_mode == "Single Match":
                         hoverinfo='text', hovertext="Goalkeeper Position", showlegend=True
                     ))
 
-                point_color = 'red' if selected_row.get('Goal_Conceded') == 1 else '#00FF00'
+                # Force everything to lowercase for bulletproof matching
+                sel_outcome_str = str(selected_row.get('Outcome', '')).lower()
+                sel_cat_str = str(selected_row.get('Action_Category', '')).lower()
+                
+                if selected_row.get('Goal_Conceded') == 1 or 'goal' in sel_outcome_str:
+                    point_color = 'red'
+                elif 'block' in sel_outcome_str or 'off_target' in sel_outcome_str or 'off target' in sel_outcome_str or 'miss' in sel_cat_str:
+                    point_color = 'white'
+                elif 'save' in sel_outcome_str or 'save' in sel_cat_str:
+                    point_color = '#00FF00'
+                else:
+                    point_color = 'white'
+                
                 fig_goal.add_trace(go.Scatter(
                     x=[y_centered], y=[raw_end_z], mode='markers',
                     name='Shot',
-                    marker=dict(size=14, color=point_color, symbol='circle', line=dict(color='white', width=2)),
+                    marker=dict(size=14, color=point_color, symbol='circle', line=dict(color='black', width=2)),
                     hoverinfo='text', hovertext=f"Ball Height: {raw_end_z} yds", showlegend=True
                 ))
                 
@@ -1335,6 +1358,46 @@ elif report_mode == "Single Match":
         if not valid_passes.empty:
             phase_df = valid_passes.groupby(['Play_State', 'Outcome']).size().reset_index(name='Count')
             st.plotly_chart(px.bar(phase_df, x='Play_State', y='Count', color='Outcome', title="Dead Ball vs Open Play Passing Split", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
+
+
+    # --- INJECT R2 BENCHMARK HERE ---
+    if "Þór" in opp_name or "Thór" in opp_name:
+        st.markdown("---")
+        st.markdown("## 🏆 Round 2 League Benchmark (Opta)")
+        st.markdown("*League-wide comparison for Round 2 performance.*")
+        
+        def load_r2_benchmark():
+            try:
+                # Ensure the path is strictly resolved to the app's directory just like the CSVs
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                r2_path = os.path.join(current_dir, 'r2_all_keepers_2026.json')
+                
+                with open(r2_path, 'r', encoding='utf-8') as f:
+                    r2_data = json.load(f)
+                rows = []
+                for k in r2_data.get('keepers', []):
+                    summ = k.get('summary', {})
+                    rows.append({
+                        'Goalkeeper': k.get('player'),
+                        'Team': k.get('team'),
+                        'Save %': summ.get('save_pct', 0),
+                        'Pass Acc %': summ.get('pass_accuracy_pct', 0),
+                        'Recoveries': summ.get('ball_recoveries', 0),
+                        'Saves': summ.get('saves', 0)
+                    })
+                df = pd.DataFrame(rows)
+                df['Rk'] = df['Save %'].rank(ascending=False, method='min').astype(int)
+                df = df[['Rk', 'Goalkeeper', 'Team', 'Save %', 'Pass Acc %', 'Recoveries', 'Saves']]
+                df = df.sort_values('Rk').reset_index(drop=True)
+                return df
+            except Exception as e:
+                return pd.DataFrame()
+                
+        r2_df = load_r2_benchmark()
+        if not r2_df.empty:
+            st.dataframe(r2_df.style.background_gradient(cmap='viridis', subset=['Save %', 'Pass Acc %', 'Recoveries', 'Saves']), use_container_width=True)
+        else:
+            st.info("Upload 'r2_all_keepers_2026.json' to the directory to view the Round 2 benchmark.")
 
     st.markdown("---")
     st.markdown("## 📝 Overall Match Analysis")

@@ -370,14 +370,17 @@ elif report_mode == "Season Report":
     clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
     
     total_psxg = agg_actions['PSxG'].sum() if has_psxg else 0
-    total_goals_conceded = agg_actions['Goal_Conceded'].sum()
+    # 🔥 Bulletproof Goal Count
+    total_goals_conceded = len(agg_actions[(agg_actions['Goal_Conceded'] == 1) | agg_actions['Outcome'].astype(str).str.contains('Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Goal', case=False, na=False)])
     goals_prevented = total_psxg - total_goals_conceded if has_psxg else 0
     
-    is_shot = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
+    # 🔥 Bulletproof Shot Catching
+    is_shot = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
     shots_df = agg_actions[is_shot]
     total_shots_faced = len(shots_df)
     
-    total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False)])
+    # 🔥 Bulletproof Save Catching
+    total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False) | shots_df['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
     save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
 
     claim_sweep_actions = agg_actions[(agg_actions['Action_Category'] == 'Goal Keeper') & (agg_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Sweeper', case=False, na=False))]
@@ -481,7 +484,7 @@ elif report_mode == "Season Report":
             y1, y2, y1_name, y2_name, bar_title = 'PSxG', 'Goals_Conceded', 'PSxG Faced', 'Goals Conceded', 'PSxG vs Goals Conceded per Match'
         else:
             match_agg = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
-            shots_agg = agg_actions[agg_actions['Outcome'].astype(str).str.contains('Shot|Goal|Save', case=False, na=False)].groupby('Match_ID').size().reset_index(name='Shots_Faced')
+            shots_agg = agg_actions[agg_actions['Outcome'].astype(str).str.contains('Shot|Goal|Save', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False)].groupby('Match_ID').size().reset_index(name='Shots_Faced')
             match_agg = pd.merge(match_agg, shots_agg, on='Match_ID', how='left').fillna(0)
             y1, y2, y1_name, y2_name, bar_title = 'Shots_Faced', 'Goals_Conceded', 'Shots Faced', 'Goals Conceded', 'Shots Faced vs Goals Conceded per Match'
 
@@ -564,14 +567,17 @@ elif report_mode == "Match Hub (Monthly)":
     clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
     
     total_psxg = agg_actions['PSxG'].sum() if has_psxg else 0
-    total_goals_conceded = agg_actions['Goal_Conceded'].sum()
+    # 🔥 Bulletproof Goal Count
+    total_goals_conceded = len(agg_actions[(agg_actions['Goal_Conceded'] == 1) | agg_actions['Outcome'].astype(str).str.contains('Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Goal', case=False, na=False)])
     goals_prevented = total_psxg - total_goals_conceded if has_psxg else 0
     
-    is_shot = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
+    # 🔥 Bulletproof Shot Catching
+    is_shot = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
     shots_df = agg_actions[is_shot]
     total_shots_faced = len(shots_df)
     
-    total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False)])
+    # 🔥 Bulletproof Save Catching
+    total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False) | shots_df['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
     save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
 
     claim_sweep_actions = agg_actions[(agg_actions['Action_Category'] == 'Goal Keeper') & (agg_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Sweeper', case=False, na=False))]
@@ -694,7 +700,7 @@ elif report_mode == "Match Hub (Monthly)":
             y1, y2, y1_name, y2_name, bar_title = 'PSxG', 'Goals_Conceded', 'PSxG Faced', 'Goals Conceded', 'PSxG vs Goals Conceded per Match'
         else:
             match_agg = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
-            shots_agg = agg_actions[agg_actions['Outcome'].astype(str).str.contains('Shot|Goal|Save', case=False, na=False)].groupby('Match_ID').size().reset_index(name='Shots_Faced')
+            shots_agg = agg_actions[agg_actions['Outcome'].astype(str).str.contains('Shot|Goal|Save', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False)].groupby('Match_ID').size().reset_index(name='Shots_Faced')
             match_agg = pd.merge(match_agg, shots_agg, on='Match_ID', how='left').fillna(0)
             y1, y2, y1_name, y2_name, bar_title = 'Shots_Faced', 'Goals_Conceded', 'Shots Faced', 'Goals Conceded', 'Shots Faced vs Goals Conceded per Match'
 
@@ -778,7 +784,8 @@ elif report_mode == "Single Match":
     valid_passes = match_passes.dropna(subset=['Pass_Start_X', 'Pass_End_X']).copy()
     valid_passes.reset_index(drop=True, inplace=True) 
 
-    is_shot = match_all_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | (match_all_actions['PSxG'].notna() if has_psxg else False)
+    # 🔥 Bulletproof Shot Catching
+    is_shot = match_all_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | match_all_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (match_all_actions['PSxG'].notna() if has_psxg else False)
     match_shots = match_all_actions[is_shot].copy()
     valid_shots = match_shots.dropna(subset=['Pass_Start_X', 'Pass_Start_Y']).copy()
     valid_shots.reset_index(drop=True, inplace=True)
@@ -830,8 +837,9 @@ elif report_mode == "Single Match":
     # SHOT STOPPING
     st.markdown("## 🧤 Shot Stopping")
     total_psxg = match_all_actions['PSxG'].sum() if has_psxg else 0
-    total_goals = match_all_actions['Goal_Conceded'].sum()
-    total_saves = len(valid_shots[valid_shots['Outcome'].astype(str).str.contains('Save', case=False, na=False)])
+    # 🔥 Bulletproof Goal & Save Counting
+    total_goals = len(match_all_actions[(match_all_actions['Goal_Conceded'] == 1) | match_all_actions['Outcome'].astype(str).str.contains('Goal', case=False, na=False) | match_all_actions['Action_Category'].astype(str).str.contains('Goal', case=False, na=False)])
+    total_saves = len(valid_shots[valid_shots['Outcome'].astype(str).str.contains('Save', case=False, na=False) | valid_shots['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
 
     if has_psxg:
         goals_prevented = total_psxg - total_goals
@@ -871,7 +879,7 @@ elif report_mode == "Single Match":
             cat_str = str(row.get('Action_Category', '')).lower()
             
             # 🔥 Fully bulletproof color logic
-            if row.get('Goal_Conceded') == 1 or 'goal' in outcome_str: 
+            if row.get('Goal_Conceded') == 1 or 'goal' in outcome_str or 'goal' in cat_str: 
                 base_color = 'red'
             elif 'block' in outcome_str or 'off_target' in outcome_str or 'off target' in outcome_str or 'miss' in cat_str:
                 base_color = 'white'    
@@ -1001,7 +1009,7 @@ elif report_mode == "Single Match":
                 sel_outcome_str = str(selected_row.get('Outcome', '')).lower()
                 sel_cat_str = str(selected_row.get('Action_Category', '')).lower()
                 
-                if selected_row.get('Goal_Conceded') == 1 or 'goal' in sel_outcome_str:
+                if selected_row.get('Goal_Conceded') == 1 or 'goal' in sel_outcome_str or 'goal' in sel_cat_str:
                     point_color = 'red'
                 elif 'block' in sel_outcome_str or 'off_target' in sel_outcome_str or 'off target' in sel_outcome_str or 'miss' in sel_cat_str:
                     point_color = 'white'
@@ -1030,6 +1038,7 @@ elif report_mode == "Single Match":
                 st.plotly_chart(fig_goal, width="stretch", key="goal_mouth_chart")
 
             sel_outcome = str(selected_row.get('Outcome', 'Unknown'))
+            sel_cat = str(selected_row.get('Action_Category', 'Unknown'))
             sel_minute = str(selected_row.get('Match_Minute', 'N/A'))
 
             st.markdown("#### Shot Details")
@@ -1038,14 +1047,14 @@ elif report_mode == "Single Match":
                 sel_psxg_str = f"{sel_psxg:.2f}" if pd.notna(sel_psxg) else "N/A"
                 mc1, mc2 = st.columns(2)
                 mc1.metric("Minute", f"{sel_minute}'")
-                mc2.metric("Outcome", sel_outcome)
+                mc2.metric("Outcome", sel_outcome if "Shot" in sel_outcome else sel_cat)
                 mc3, mc4 = st.columns(2)
                 mc3.metric("PSxG", sel_psxg_str)
                 mc4.metric("Distance", sel_dist_str)
             else:
                 mc1, mc2, mc3 = st.columns(3)
                 mc1.metric("Minute", f"{sel_minute}'")
-                mc2.metric("Outcome", sel_outcome)
+                mc2.metric("Outcome", sel_outcome if "Shot" in sel_outcome else sel_cat)
                 mc3.metric("Distance", sel_dist_str)
 
         else:

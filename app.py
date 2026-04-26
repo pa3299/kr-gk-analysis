@@ -1140,7 +1140,7 @@ elif report_mode == "Single Match":
                 opacity=opacity, hoverinfo='text', hovertext=hover, customdata=[i], showlegend=False
             ))
             
-        fig_sweeper.update_layout(xaxis=dict(range=[-5, 55], visible=False), yaxis=dict(range=[85, -5], visible=False, scaleanchor="x"), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
+        fig_sweeper.update_layout(xaxis=dict(range=[-5, 55], visible=False), yaxis=dict(range=[-5, 85], visible=False, scaleanchor="x"), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
         st.plotly_chart(fig_sweeper, width="stretch", on_select="rerun", selection_mode="points", key="swp_chart")
 
     with swp_info:
@@ -1267,7 +1267,7 @@ elif report_mode == "Single Match":
                 showlegend=False, opacity=opacity
             ))
 
-        fig_passes.update_layout(xaxis=dict(range=[-5, 125], showgrid=False, zeroline=False, visible=False), yaxis=dict(range=[85, -5], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
+        fig_passes.update_layout(xaxis=dict(range=[-5, 125], showgrid=False, zeroline=False, visible=False), yaxis=dict(range=[-5, 85], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
         st.plotly_chart(fig_passes, width="stretch", on_select="rerun", selection_mode="points", key="pitch_chart")
 
         with st.expander("📥 Download Pass Map & Data"):

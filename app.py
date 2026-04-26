@@ -370,19 +370,16 @@ elif report_mode == "Season Report":
     clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
     
     total_psxg = agg_actions['PSxG'].sum() if has_psxg else 0
-    # 🔥 Bulletproof Goal Count
     is_goal_mask = (agg_actions['Goal_Conceded'] == 1) | agg_actions['Outcome'].astype(str).str.contains('Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Goal', case=False, na=False)
     is_goal = is_goal_mask & ~agg_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~agg_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
     total_goals_conceded = len(agg_actions[is_goal])
     goals_prevented = total_psxg - total_goals_conceded if has_psxg else 0
     
-    # 🔥 Bulletproof Shot Catching
     is_shot_mask = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
     is_shot = is_shot_mask & ~agg_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~agg_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
     shots_df = agg_actions[is_shot]
     total_shots_faced = len(shots_df)
     
-    # 🔥 Bulletproof Save Catching
     total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False) | shots_df['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
     save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
 
@@ -570,19 +567,16 @@ elif report_mode == "Match Hub (Monthly)":
     clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
     
     total_psxg = agg_actions['PSxG'].sum() if has_psxg else 0
-    # 🔥 Bulletproof Goal Count
     is_goal_mask = (agg_actions['Goal_Conceded'] == 1) | agg_actions['Outcome'].astype(str).str.contains('Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Goal', case=False, na=False)
     is_goal = is_goal_mask & ~agg_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~agg_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
     total_goals_conceded = len(agg_actions[is_goal])
     goals_prevented = total_psxg - total_goals_conceded if has_psxg else 0
     
-    # 🔥 Bulletproof Shot Catching
     is_shot_mask = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
     is_shot = is_shot_mask & ~agg_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~agg_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
     shots_df = agg_actions[is_shot]
     total_shots_faced = len(shots_df)
     
-    # 🔥 Bulletproof Save Catching
     total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False) | shots_df['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
     save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
 
@@ -790,14 +784,12 @@ elif report_mode == "Single Match":
     valid_passes = match_passes.dropna(subset=['Pass_Start_X', 'Pass_End_X']).copy()
     valid_passes.reset_index(drop=True, inplace=True) 
 
-    # 🔥 Bulletproof Shot Catching
     is_shot_mask = match_all_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | match_all_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (match_all_actions['PSxG'].notna() if has_psxg else False)
     is_shot = is_shot_mask & ~match_all_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~match_all_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
     match_shots = match_all_actions[is_shot].copy()
     valid_shots = match_shots.dropna(subset=['Pass_Start_X', 'Pass_Start_Y']).copy()
     valid_shots.reset_index(drop=True, inplace=True)
 
-    # Added BallRecovery here so it correctly graphs on the Sweeper Map
     def_actions = match_all_actions[
         match_all_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Smother|Sweeper|Interception', case=False, na=False) | 
         match_all_actions['Action_Category'].astype(str).str.contains('Clearance|Interception|BallRecovery', case=False, na=False)
@@ -844,7 +836,7 @@ elif report_mode == "Single Match":
     # SHOT STOPPING
     st.markdown("## 🧤 Shot Stopping")
     total_psxg = match_all_actions['PSxG'].sum() if has_psxg else 0
-    # 🔥 Bulletproof Goal & Save Counting
+    
     is_goal_mask = (match_all_actions['Goal_Conceded'] == 1) | match_all_actions['Outcome'].astype(str).str.contains('Goal', case=False, na=False) | match_all_actions['Action_Category'].astype(str).str.contains('Goal', case=False, na=False)
     is_goal = is_goal_mask & ~match_all_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~match_all_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
     total_goals = len(match_all_actions[is_goal])
@@ -883,11 +875,9 @@ elif report_mode == "Single Match":
         for i, row in valid_shots.iterrows():
             is_active = (selected_shot_idx == i)
             
-            # Force everything to lowercase for bulletproof matching
             outcome_str = str(row.get('Outcome', '')).lower()
             cat_str = str(row.get('Action_Category', '')).lower()
             
-            # 🔥 Fully bulletproof color logic
             is_gk_action = 'goalkick' in cat_str or 'goal kick' in cat_str or 'goalkeeper' in cat_str or 'goal keeper' in cat_str or 'goalkick' in outcome_str or 'goal kick' in outcome_str
             
             if row.get('Goal_Conceded') == 1 or (not is_gk_action and ('goal' in outcome_str or 'goal' in cat_str)): 
@@ -909,10 +899,20 @@ elif report_mode == "Single Match":
 
             if pd.isna(start_x): start_x = 0
             if pd.isna(start_y): start_y = 0
-            if pd.isna(end_x): end_x = 120  # Point shots to the goal line
-            if pd.isna(end_y): end_y = start_y
+            
+            # --- THE 2D SHOT MAP FIX ---
+            if pd.isna(end_x):
+                # If X > 60, it's a Custom Striker Location. Draw line to the goal (120).
+                if start_x > 60:
+                    end_x = 120  
+                # If X <= 60, it's a Raw Opta GK Save Location. Keep it as a dot.
+                else:
+                    end_x = start_x
+                    
+            if pd.isna(end_y): 
+                end_y = start_y
 
-            distance_str = "Unknown"
+            distance_str = "N/A"
             if start_x != end_x or start_y != end_y:
                 dist = ((end_x - start_x)**2 + (end_y - start_y)**2)**0.5
                 distance_str = f"{dist:.1f} yds"
@@ -1016,7 +1016,6 @@ elif report_mode == "Single Match":
                         hoverinfo='text', hovertext="Goalkeeper Position", showlegend=True
                     ))
 
-                # Force everything to lowercase for bulletproof matching
                 sel_outcome_str = str(selected_row.get('Outcome', '')).lower()
                 sel_cat_str = str(selected_row.get('Action_Category', '')).lower()
                 

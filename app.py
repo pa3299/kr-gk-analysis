@@ -370,9 +370,8 @@ elif report_mode == "Season Report":
     clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
     
     total_psxg = agg_actions['PSxG'].sum() if has_psxg else 0
-    is_goal_mask = (agg_actions['Goal_Conceded'] == 1) | agg_actions['Outcome'].astype(str).str.contains('Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Goal', case=False, na=False)
-    is_goal = is_goal_mask & ~agg_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~agg_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
-    total_goals_conceded = len(agg_actions[is_goal])
+    # 🔥 Bulletproof Goal Count using Match Database
+    total_goals_conceded = pd.to_numeric(agg_matches['Opponent_Score'], errors='coerce').fillna(0).sum()
     goals_prevented = total_psxg - total_goals_conceded if has_psxg else 0
     
     is_shot_mask = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
@@ -431,13 +430,16 @@ elif report_mode == "Season Report":
     if not agg_actions.empty:
         if has_psxg:
             st.markdown("### 📈 Form Tracker: PSxG Prevented")
-            match_agg_trend = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg_trend = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum')).reset_index()
+            match_agg_trend = pd.merge(match_agg_trend, agg_matches[['Match_ID', 'Opponent_Score']], on='Match_ID', how='left')
+            match_agg_trend['Goals_Conceded'] = pd.to_numeric(match_agg_trend['Opponent_Score'], errors='coerce').fillna(0)
             match_agg_trend['Y_Value'] = (match_agg_trend['PSxG'] - match_agg_trend['Goals_Conceded']).round(2)
             title = "Month-by-Month Form (Cumulative PSxG Prevented)"
             y_title = "PSxG Prevented"
         else:
             st.markdown("### 📈 Form Tracker: Goals Conceded")
-            match_agg_trend = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg_trend = agg_matches[['Match_ID', 'Opponent_Score']].copy()
+            match_agg_trend['Goals_Conceded'] = pd.to_numeric(match_agg_trend['Opponent_Score'], errors='coerce').fillna(0)
             match_agg_trend['Y_Value'] = match_agg_trend['Goals_Conceded']
             title = "Month-by-Month Form (Cumulative Goals Conceded)"
             y_title = "Goals Conceded"
@@ -461,8 +463,12 @@ elif report_mode == "Season Report":
 
         fig_trend.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines+markers', marker=dict(size=14, color=marker_colors, line=dict(color='white', width=2)), line=dict(color='#00BFFF', width=3), customdata=custom_data, hovertemplate=hover_template))
         
-        current_max = max(4, (y_data.abs().max() if not y_data.empty else 0) * 1.2)
-        fig_trend.update_layout(title=title, yaxis=dict(range=[-current_max if has_psxg else 0, current_max], title=y_title, zeroline=False), xaxis=dict(title="Month"), template='plotly_dark', height=350, clickmode='event+select', margin=dict(l=20, r=20, t=40, b=20))
+        current_max = max(5, (y_data.abs().max() if not y_data.empty else 0) * 1.2)
+        yaxis_dict = dict(range=[-current_max if has_psxg else 0, current_max], title=y_title, zeroline=False)
+        if not has_psxg:
+            yaxis_dict['dtick'] = 1
+            
+        fig_trend.update_layout(title=title, yaxis=yaxis_dict, xaxis=dict(title="Month"), template='plotly_dark', height=350, clickmode='event+select', margin=dict(l=20, r=20, t=40, b=20))
         
         st.info("👆 Click on any marker to jump to that specific monthly report.")
         trend_selection = st.plotly_chart(fig_trend, width="stretch", on_select="rerun", selection_mode="points", key="trend_chart_season")
@@ -480,10 +486,13 @@ elif report_mode == "Season Report":
 
     with chart_col1:
         if has_psxg:
-            match_agg = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum')).reset_index()
+            match_agg = pd.merge(match_agg, agg_matches[['Match_ID', 'Opponent_Score']], on='Match_ID', how='left')
+            match_agg['Goals_Conceded'] = pd.to_numeric(match_agg['Opponent_Score'], errors='coerce').fillna(0)
             y1, y2, y1_name, y2_name, bar_title = 'PSxG', 'Goals_Conceded', 'PSxG Faced', 'Goals Conceded', 'PSxG vs Goals Conceded per Match'
         else:
-            match_agg = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg = agg_matches[['Match_ID', 'Opponent_Score']].copy()
+            match_agg['Goals_Conceded'] = pd.to_numeric(match_agg['Opponent_Score'], errors='coerce').fillna(0)
             shots_agg = agg_actions[agg_actions['Outcome'].astype(str).str.contains('Shot|Goal|Save', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False)].groupby('Match_ID').size().reset_index(name='Shots_Faced')
             match_agg = pd.merge(match_agg, shots_agg, on='Match_ID', how='left').fillna(0)
             y1, y2, y1_name, y2_name, bar_title = 'Shots_Faced', 'Goals_Conceded', 'Shots Faced', 'Goals Conceded', 'Shots Faced vs Goals Conceded per Match'
@@ -500,7 +509,12 @@ elif report_mode == "Season Report":
         match_agg = match_agg.sort_values('Date_Parsed')
 
         fig_bar = go.Figure(data=[go.Bar(name=y1_name, x=match_agg['Match_Label'], y=match_agg[y1], marker_color='#00BFFF'), go.Bar(name=y2_name, x=match_agg['Match_Label'], y=match_agg[y2], marker_color='red')])
-        fig_bar.update_layout(barmode='group', title=bar_title, template='plotly_dark')
+        
+        yaxis_bar_dict = dict()
+        if not has_psxg:
+            yaxis_bar_dict['dtick'] = 1
+            
+        fig_bar.update_layout(barmode='group', title=bar_title, template='plotly_dark', yaxis=yaxis_bar_dict)
         st.plotly_chart(fig_bar, width="stretch")
 
     with chart_col2:
@@ -567,9 +581,8 @@ elif report_mode == "Match Hub (Monthly)":
     clean_sheets = agg_matches['Opponent_Score'].apply(lambda x: 1 if pd.to_numeric(x, errors='coerce') == 0 else 0).sum()
     
     total_psxg = agg_actions['PSxG'].sum() if has_psxg else 0
-    is_goal_mask = (agg_actions['Goal_Conceded'] == 1) | agg_actions['Outcome'].astype(str).str.contains('Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Goal', case=False, na=False)
-    is_goal = is_goal_mask & ~agg_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~agg_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
-    total_goals_conceded = len(agg_actions[is_goal])
+    # 🔥 Bulletproof Goal Count using Match Database
+    total_goals_conceded = pd.to_numeric(agg_matches['Opponent_Score'], errors='coerce').fillna(0).sum()
     goals_prevented = total_psxg - total_goals_conceded if has_psxg else 0
     
     is_shot_mask = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
@@ -628,13 +641,16 @@ elif report_mode == "Match Hub (Monthly)":
     if not agg_actions.empty:
         if has_psxg:
             st.markdown("### 📈 Form Tracker: PSxG Prevented")
-            match_agg_trend = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg_trend = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum')).reset_index()
+            match_agg_trend = pd.merge(match_agg_trend, agg_matches[['Match_ID', 'Opponent_Score']], on='Match_ID', how='left')
+            match_agg_trend['Goals_Conceded'] = pd.to_numeric(match_agg_trend['Opponent_Score'], errors='coerce').fillna(0)
             match_agg_trend['Y_Value'] = (match_agg_trend['PSxG'] - match_agg_trend['Goals_Conceded']).round(2)
             title = "Game-by-Game Form (PSxG Prevented)"
             y_title = "PSxG Prevented"
         else:
             st.markdown("### 📈 Form Tracker: Goals Conceded")
-            match_agg_trend = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg_trend = agg_matches[['Match_ID', 'Opponent_Score']].copy()
+            match_agg_trend['Goals_Conceded'] = pd.to_numeric(match_agg_trend['Opponent_Score'], errors='coerce').fillna(0)
             match_agg_trend['Y_Value'] = match_agg_trend['Goals_Conceded']
             title = "Game-by-Game Form (Goals Conceded)"
             y_title = "Goals Conceded"
@@ -660,8 +676,12 @@ elif report_mode == "Match Hub (Monthly)":
 
         fig_trend.add_trace(go.Scatter(x=x_data, y=y_data, mode='lines+markers', marker=dict(size=14, color=marker_colors, line=dict(color='white', width=2)), line=dict(color='#00BFFF', width=3), customdata=custom_data, hovertemplate=hover_template))
         
-        current_max = max(3, (y_data.abs().max() if not y_data.empty else 0) * 1.2)
-        fig_trend.update_layout(title=title, yaxis=dict(range=[-current_max if has_psxg else 0, current_max], title=y_title, zeroline=False), xaxis=dict(title="Match"), template='plotly_dark', height=350, clickmode='event+select', margin=dict(l=20, r=20, t=40, b=20))
+        current_max = max(5, (y_data.abs().max() if not y_data.empty else 0) * 1.2)
+        yaxis_dict = dict(range=[-current_max if has_psxg else 0, current_max], title=y_title, zeroline=False)
+        if not has_psxg:
+            yaxis_dict['dtick'] = 1
+            
+        fig_trend.update_layout(title=title, yaxis=yaxis_dict, xaxis=dict(title="Match"), template='plotly_dark', height=350, clickmode='event+select', margin=dict(l=20, r=20, t=40, b=20))
         
         st.info("👆 Click on any marker to jump to that specific report.")
         trend_selection = st.plotly_chart(fig_trend, width="stretch", on_select="rerun", selection_mode="points", key="trend_chart_monthly")
@@ -696,10 +716,13 @@ elif report_mode == "Match Hub (Monthly)":
 
     with chart_col1:
         if has_psxg:
-            match_agg = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum'), Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg = agg_actions.groupby('Match_ID').agg(PSxG=('PSxG', 'sum')).reset_index()
+            match_agg = pd.merge(match_agg, agg_matches[['Match_ID', 'Opponent_Score']], on='Match_ID', how='left')
+            match_agg['Goals_Conceded'] = pd.to_numeric(match_agg['Opponent_Score'], errors='coerce').fillna(0)
             y1, y2, y1_name, y2_name, bar_title = 'PSxG', 'Goals_Conceded', 'PSxG Faced', 'Goals Conceded', 'PSxG vs Goals Conceded per Match'
         else:
-            match_agg = agg_actions.groupby('Match_ID').agg(Goals_Conceded=('Goal_Conceded', 'sum')).reset_index()
+            match_agg = agg_matches[['Match_ID', 'Opponent_Score']].copy()
+            match_agg['Goals_Conceded'] = pd.to_numeric(match_agg['Opponent_Score'], errors='coerce').fillna(0)
             shots_agg = agg_actions[agg_actions['Outcome'].astype(str).str.contains('Shot|Goal|Save', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False)].groupby('Match_ID').size().reset_index(name='Shots_Faced')
             match_agg = pd.merge(match_agg, shots_agg, on='Match_ID', how='left').fillna(0)
             y1, y2, y1_name, y2_name, bar_title = 'Shots_Faced', 'Goals_Conceded', 'Shots Faced', 'Goals Conceded', 'Shots Faced vs Goals Conceded per Match'
@@ -716,7 +739,12 @@ elif report_mode == "Match Hub (Monthly)":
         match_agg = match_agg.sort_values('Date_Parsed')
 
         fig_bar = go.Figure(data=[go.Bar(name=y1_name, x=match_agg['Match_Label'], y=match_agg[y1], marker_color='#00BFFF'), go.Bar(name=y2_name, x=match_agg['Match_Label'], y=match_agg[y2], marker_color='red')])
-        fig_bar.update_layout(barmode='group', title=bar_title, template='plotly_dark')
+        
+        yaxis_bar_dict = dict()
+        if not has_psxg:
+            yaxis_bar_dict['dtick'] = 1
+            
+        fig_bar.update_layout(barmode='group', title=bar_title, template='plotly_dark', yaxis=yaxis_bar_dict)
         st.plotly_chart(fig_bar, width="stretch")
 
     with chart_col2:
@@ -837,9 +865,8 @@ elif report_mode == "Single Match":
     st.markdown("## 🧤 Shot Stopping")
     total_psxg = match_all_actions['PSxG'].sum() if has_psxg else 0
     
-    is_goal_mask = (match_all_actions['Goal_Conceded'] == 1) | match_all_actions['Outcome'].astype(str).str.contains('Goal', case=False, na=False) | match_all_actions['Action_Category'].astype(str).str.contains('Goal', case=False, na=False)
-    is_goal = is_goal_mask & ~match_all_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~match_all_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
-    total_goals = len(match_all_actions[is_goal])
+    # 🔥 Bulletproof Goal & Save Counting (Pulls exact match score)
+    total_goals = int(pd.to_numeric(match_info.get('Opponent_Score', 0), errors='coerce'))
     total_saves = len(valid_shots[valid_shots['Outcome'].astype(str).str.contains('Save', case=False, na=False) | valid_shots['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
 
     if has_psxg:

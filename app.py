@@ -133,7 +133,7 @@ def load_data():
         actions_df['Tactical_Bucket'] = actions_df.apply(categorize_pass, axis=1)
         
         # Extended safeguards for new Opta stats
-        for col in ['Pass_Length', 'Pass_Direction', 'Pass_Type_Detail', 'Diving_Saves', 'Keeper_Throws', 'Keeper_Pick_Ups', 'Launches', 'Accurate_Sweeper']:
+        for col in ['Pass_Length', 'Pass_Direction', 'Pass_Type_Detail', 'Diving_Saves', 'Keeper_Throws', 'Keeper_Pick_Ups', 'Launches', 'Accurate_Sweeper', 'Delivery_Angle']:
             if col not in actions_df.columns: actions_df[col] = None
             
         actions_df['Under_Pressure'] = pd.to_numeric(actions_df.get('Under_Pressure', 0), errors='coerce').fillna(0)
@@ -148,6 +148,7 @@ def load_data():
         actions_df['Pass_Length'] = pd.Series(dtype=float)
         actions_df['Pass_Direction'] = pd.Series(dtype=str)
         actions_df['Accurate_Sweeper'] = pd.Series(dtype=float)
+        actions_df['Delivery_Angle'] = pd.Series(dtype=float)
         
     return matches_df, actions_df
 
@@ -751,7 +752,9 @@ elif report_mode == "Match Hub (Monthly)":
         if not passes_df.empty:
             dist_agg = passes_df['Tactical_Bucket'].value_counts().reset_index()
             dist_agg.columns = ['Tactical Focus', 'Count']
-            st.plotly_chart(px.pie(dist_agg, names='Tactical Focus', values='Count', title="Passing Distribution Profile", template='plotly_dark', hole=0.4), width="stretch")
+            # 🔥 FIX 1: Explicitly assigned to fig_pie
+            fig_pie = px.pie(dist_agg, names='Tactical Focus', values='Count', title="Passing Distribution Profile", template='plotly_dark', hole=0.4)
+            st.plotly_chart(fig_pie, width="stretch")
 
     with st.expander("📥 Download Trend Data"):
         col_c1, col_c2 = st.columns(2)
@@ -1194,6 +1197,137 @@ elif report_mode == "Single Match":
             st.info("👆 Click on any defensive action on the pitch to see details.")
 
 
+    # --- SET PIECES FACED MAP ---
+    st.markdown("---")
+    st.markdown("## 🚩 Set Pieces Faced")
+
+    match_set_pieces = match_all_actions[match_all_actions['Action_Category'] == 'Set Piece Faced'].copy()
+    valid_set_pieces = match_set_pieces.dropna(subset=['Pass_Start_X', 'Pass_Start_Y', 'Pass_End_X', 'Pass_End_Y']).copy()
+    valid_set_pieces.reset_index(drop=True, inplace=True)
+
+    sp_total = len(valid_set_pieces)
+    sp_corners = len(valid_set_pieces[valid_set_pieces['Play_Pattern'] == 'Corner'])
+    sp_fk = len(valid_set_pieces[valid_set_pieces['Play_Pattern'] == 'Free Kick'])
+    sp_throw = len(valid_set_pieces[valid_set_pieces['Play_Pattern'] == 'Throw In'])
+
+    sp_kpi1, sp_kpi2, sp_kpi3, sp_kpi4 = st.columns(4)
+    sp_kpi1.metric(label="Total Set Pieces Faced", value=sp_total)
+    sp_kpi2.metric(label="Corners", value=sp_corners)
+    sp_kpi3.metric(label="Free Kicks", value=sp_fk)
+    sp_kpi4.metric(label="Dangerous Throw-ins", value=sp_throw)
+
+    sp_pitch, sp_video = st.columns([2.5, 1.5])
+    with sp_pitch:
+        selected_sp_idx = None
+        if "sp_chart" in st.session_state:
+            points = st.session_state.sp_chart.get("selection", {}).get("points", [])
+            if points:
+                cd = points[0].get("customdata")
+                if isinstance(cd, list) and len(cd) > 0: selected_sp_idx = cd[0]
+                elif cd is not None: selected_sp_idx = cd
+
+        st.markdown("""
+        <div style='background-color: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 15px;'>
+            <div style='display: flex; flex-wrap: wrap; gap: 15px; font-size: 0.85rem;'>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #00FF00;'></span> Opponent Complete</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FF3333;'></span> Incomplete / Cleared</div>
+                <div style='border-left: 1px solid #555; height: 16px; margin: 0 5px;'></div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #00BFFF;'></span> Corner</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #B0008E;'></span> Free Kick</div>
+                <div style='display: flex; align-items: center; gap: 5px;'><span style='width: 12px; height: 12px; border-radius: 50%; background-color: #FFEA00;'></span> Throw In</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        fig_sp = go.Figure()
+        fig_sp.add_shape(type="rect", x0=0, y0=0, x1=120, y1=80, line=dict(color="white", width=2))
+        fig_sp.add_shape(type="line", x0=60, y0=0, x1=60, y1=80, line=dict(color="white", width=2))
+        fig_sp.add_shape(type="circle", x0=50, y0=30, x1=70, y1=50, line=dict(color="white", width=2))
+        fig_sp.add_shape(type="rect", x0=0, y0=18, x1=18, y1=62, line=dict(color="white", width=2))
+        fig_sp.add_shape(type="rect", x0=0, y0=30, x1=6, y1=50, line=dict(color="white", width=2))
+        fig_sp.add_shape(type="rect", x0=102, y0=18, x1=120, y1=62, line=dict(color="white", width=2))
+        fig_sp.add_shape(type="rect", x0=114, y0=30, x1=120, y1=50, line=dict(color="white", width=2))
+
+        def get_sp_color(pattern):
+            if pattern == 'Corner': return '#00BFFF'
+            if pattern == 'Free Kick': return '#B0008E'
+            if pattern == 'Throw In': return '#FFEA00'
+            return '#FFFFFF'
+
+        for i, row in valid_set_pieces.iterrows():
+            is_active = (selected_sp_idx == i)
+            base_color = '#00FF00' if row['Outcome'] == 'Complete' else '#FF3333'
+            tip_color = get_sp_color(row.get('Play_Pattern', 'Unknown'))
+
+            if is_active: line_width, opacity = 5, 1.0          
+            else: line_width, opacity = 3, (0.3 if selected_sp_idx is not None else 1.0)
+
+            hover_text = f"<b>Minute: {row.get('Match_Minute')}</b><br>Type: {row.get('Play_Pattern')}<br>Delivery: {row.get('Pass_Type_Detail', 'Unknown')}<br>Outcome: {row.get('Outcome')}"
+
+            x0 = pd.to_numeric(row.get('Pass_Start_X'), errors='coerce')
+            y0 = pd.to_numeric(row.get('Pass_Start_Y'), errors='coerce')
+            x1 = pd.to_numeric(row.get('Pass_End_X'), errors='coerce')
+            y1 = pd.to_numeric(row.get('Pass_End_Y'), errors='coerce')
+
+            # Standardize direction so KR is defending the goal at x=0
+            if x0 < 60:
+                 x0 = 120 - x0
+                 y0 = 80 - y0
+                 x1 = 120 - x1
+                 y1 = 80 - y1
+
+            num_segments = 15
+            for step in range(num_segments):
+                f0 = step / num_segments
+                f1 = (step + 1) / num_segments
+                seg_x = [x0 + (x1 - x0) * f0, x0 + (x1 - x0) * f1]
+                seg_y = [y0 + (y1 - y0) * f0, y0 + (y1 - y0) * f1]
+                color = interpolate_color(base_color, tip_color, f0)
+                
+                fig_sp.add_trace(go.Scatter(
+                    x=seg_x, y=seg_y, mode='lines',
+                    line=dict(color=color, width=line_width),
+                    customdata=[i, i], hoverinfo='text', hovertext=[hover_text, hover_text],
+                    showlegend=False, opacity=opacity
+                ))
+
+            fig_sp.add_trace(go.Scatter(
+                x=[x1], y=[y1], mode='markers',
+                marker=dict(size=8, color=tip_color, line=dict(color='white', width=1)),
+                customdata=[i], hoverinfo='text', hovertext=[hover_text],
+                showlegend=False, opacity=opacity
+            ))
+
+        fig_sp.update_layout(xaxis=dict(range=[-5, 125], showgrid=False, zeroline=False, visible=False), yaxis=dict(range=[-5, 85], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
+        st.plotly_chart(fig_sp, width="stretch", on_select="rerun", selection_mode="points", key="sp_chart")
+
+    with sp_video:
+        st.markdown("### Set Piece Context")
+        if selected_sp_idx is not None and selected_sp_idx < len(valid_set_pieces):
+            if st.button("🔙 Clear Selection", key="clear_sp"):
+                st.session_state.sp_chart = {"selection": {"points": []}}; st.rerun()
+
+            sel_row = valid_set_pieces.iloc[selected_sp_idx]
+            
+            st.metric("Type", sel_row.get('Play_Pattern', 'Unknown'))
+            st.metric("Delivery", sel_row.get('Pass_Type_Detail', 'Unknown'))
+            
+            angle_val = sel_row.get('Delivery_Angle')
+            st.metric("Angle", f"{angle_val:.2f} rad" if pd.notna(angle_val) else "N/A")
+            
+            vid_url = sel_row.get("Video_URL")
+            if pd.notna(vid_url) and str(vid_url).strip() != "": st.video(str(vid_url).strip())
+            else: st.warning("No Video URL logged for this set piece.")
+            
+            with st.container(height=150, border=True):
+                notes = sel_row.get("Scout_Analysis", "")
+                if pd.notna(notes) and str(notes).strip() != "": st.write(notes)
+                else: st.info("No detailed analysis for this set piece.")
+                
+        else:
+            st.info("👆 Click on any set piece on the pitch to load its context.")
+
+
     # DISTRIBUTION & PASSING
     st.markdown("---")
     st.markdown("## 👟 Distribution & Passing")
@@ -1479,13 +1613,20 @@ st.sidebar.markdown('<a href="javascript:window.print()" target="_self" style="d
 
 if report_mode == "Single Match":
     figs_to_export = []
-    for fig_name in ['fig_shots', 'fig_sweeper', 'fig_passes', 'fig_bar', 'fig_radar', 'fig_dir', 'fig_len', 'fig_long']:
+    for fig_name in ['fig_shots', 'fig_sweeper', 'fig_sp', 'fig_passes', 'fig_bar', 'fig_radar', 'fig_dir', 'fig_len', 'fig_long']:
         if fig_name in locals():
             figs_to_export.append(locals()[fig_name])
     html_export = generate_html_report(figs_to_export, "Match Report")
+    
 elif report_mode == "League Benchmark (Opta)":
     html_export = generate_html_report([fig_gki_radar, fig_scatter] if 'fig_gki_radar' in locals() else [], "League Benchmark Report")
+    
 else:
-    html_export = generate_html_report([fig_trend, fig_bar, fig_pie] if 'fig_trend' in locals() else [fig_bar, fig_pie] if 'fig_bar' in locals() else [], "Aggregated Report")
+    # Bulletproof export for Season & Monthly Tabs
+    figs_to_export = []
+    for fig_name in ['fig_trend', 'fig_bar', 'fig_pie']:
+        if fig_name in locals():
+            figs_to_export.append(locals()[fig_name])
+    html_export = generate_html_report(figs_to_export, "Aggregated Report")
 
 st.sidebar.download_button("🌐 Download Interactive HTML", data=html_export, file_name="Report.html", mime="text/html", width="stretch")

@@ -154,11 +154,11 @@ def load_data():
 
 matches_df, actions_df = load_data()
 
-# --- DYNAMIC OPTA LEAGUE GKI ENGINE ---
+
+# --- DYNAMIC OPTA LEAGUE GKI ENGINE (Totals File) ---
 def load_benchmark_data(season):
     current_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # 2025 Legacy Hardcoded Fallback
     if str(season) == "2025":
         gki_data = {
             'Goalkeeper': ['H. Georgsson', 'Á. Ólafsson', 'Á. Einarsson', 'A. Einarsson', 'V. Sigurðsson', 'M. Zapytowski', 'S. Auðunsson', 'P. Arinbjornsson', 'I. Jónsson', 'F. Schram', 'W. Tønning', 'M. Rosenørn', 'S. Ágústsson'],
@@ -170,14 +170,12 @@ def load_benchmark_data(season):
             'GKI': [0.643, 0.627, 0.626, 0.605, 0.551, 0.549, 0.517, 0.472, 0.455, 0.432, 0.326, 0.322, 0.304]
         }
         df = pd.DataFrame(gki_data)
-        # Add proxy visualizer metrics
         df['Saves_per_90'] = df['Shot Stopping'] * 5 
         df['Save_Pct'] = df['Shot Stopping'] * 100
         df['Time Played'] = 1000
         df['Player'] = df['Goalkeeper']
         return df
 
-    # Dynamic Parser for 2026+ Cumulative Files
     files = [f for f in os.listdir(current_dir) if f.startswith(f'besta_{season}_goalkeeper_totals') and f.endswith('.csv')]
     if not files:
         return pd.DataFrame()
@@ -188,7 +186,6 @@ def load_benchmark_data(season):
     mins_col = 'minsPlayed' if 'minsPlayed' in df_raw.columns else 'minutes' if 'minutes' in df_raw.columns else None
     if not mins_col: return pd.DataFrame()
     
-    # Exclude keepers who haven't played enough to avoid statistical anomalies
     df_raw = df_raw[df_raw[mins_col] >= 270].copy() 
     if df_raw.empty: return pd.DataFrame()
     
@@ -205,7 +202,6 @@ def load_benchmark_data(season):
     df['Save_Pct'] = (saves / (saves + gc)) * 100
     df['Save_Pct'] = df['Save_Pct'].fillna(0)
     
-    # The Goalkeeper Index (GKI) Algorithm
     def min_max(series):
         return (series - series.min()) / (series.max() - series.min() + 0.0001)
         
@@ -221,6 +217,16 @@ def load_benchmark_data(season):
     df['GKI'] = (df['Shot Stopping'] * 0.40) + (df['Distribution'] * 0.35) + (df['Sweeping'] * 0.15) + (df['Command'] * 0.10)
     
     return df
+
+# --- DYNAMIC OPTA CUSTOM ENGINE (Match Data File) ---
+def load_match_data(season):
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    files = [f for f in os.listdir(current_dir) if f.startswith(f'besta_{season}_goalkeeper_match_data') and f.endswith('.csv')]
+    if not files:
+        return pd.DataFrame()
+    files.sort()
+    return pd.read_csv(os.path.join(current_dir, files[-1]), encoding='utf-8-sig')
+
 
 def generate_html_report(figs, title):
     html = f"<html><head><title>{title}</title><script src='https://cdn.plot.ly/plotly-latest.min.js'></script><style>body {{ background-color: #0E1117; color: white; font-family: sans-serif; padding: 20px; }} .chart-container {{ margin-bottom: 40px; border: 1px solid #333; padding: 10px; border-radius: 8px; }} </style></head><body><h1 style='text-align: center;'>{title}</h1>"
@@ -283,100 +289,183 @@ if report_mode == "League Benchmark (Opta)":
     st.markdown(f"*Composite index across Shot Stopping (40%), Distribution (35%), Sweeping (15%), and Command (10%). Min-max normalised against the {selected_season} Besta deild population (≥270 mins).*")
     st.markdown("---")
 
-    gki_df = load_benchmark_data(selected_season)
-    
-    if gki_df.empty:
-        st.info(f"Besta deild GKI tracking data is not yet available in the directory for the {selected_season} season. Please upload the 'besta_{selected_season}_goalkeeper_totals' file.")
-    else:
-        gki_df['Rk'] = gki_df['GKI'].rank(ascending=False, method='min').astype(int)
-        gki_df['SS Rk'] = gki_df['Shot Stopping'].rank(ascending=False, method='min').astype(int)
-        gki_df['Dist Rk'] = gki_df['Distribution'].rank(ascending=False, method='min').astype(int)
-        gki_df['Swp Rk'] = gki_df['Sweeping'].rank(ascending=False, method='min').astype(int)
-        gki_df['Cmd Rk'] = gki_df['Command'].rank(ascending=False, method='min').astype(int)
+    tab_gki, tab_custom = st.tabs(["🌟 Overall GKI Leaderboard", "📊 Custom Metric Builder"])
+
+    with tab_gki:
+        gki_df = load_benchmark_data(selected_season)
         
-        gki_df = gki_df.sort_values('Rk').reset_index(drop=True)
-        
-        leader = gki_df.iloc[0]
-        st.markdown(f"### 🥇 League Leader: {leader['Goalkeeper']} ({leader['Team']})")
-        
-        kr_stats_df = gki_df[gki_df['Goalkeeper'].str.contains('Georgsson|Halldór', case=False, na=False)]
-        
-        if not kr_stats_df.empty:
-            kr_stats = kr_stats_df.iloc[0]
-            kr_kpi1, kr_kpi2, kr_kpi3, kr_kpi4 = st.columns(4)
-            kr_kpi1.metric(label="Overall GKI", value=f"{kr_stats['GKI']:.3f}", delta=f"League Rank: #{kr_stats['Rk']}")
-            kr_kpi2.metric(label="Distribution Rating", value=f"{kr_stats['Distribution']:.3f}", delta=f"Rank: #{kr_stats['Dist Rk']}")
-            kr_kpi3.metric(label="Save %", value=f"{kr_stats['Save_Pct']:.1f}%", delta=f"Rank: #{kr_stats['SS Rk']}")
-            kr_kpi4.metric(label="Time Played", value=f"{int(kr_stats['Time Played'])}' mins")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        col_radar, col_scatter = st.columns([1, 1])
-        
-        with col_radar:
-            st.markdown("#### GKI Profile Comparison")
+        if gki_df.empty:
+            st.info(f"Besta deild GKI tracking data is not yet available in the directory for the {selected_season} season. Please upload the 'besta_{selected_season}_goalkeeper_totals' file.")
+        else:
+            gki_df['Rk'] = gki_df['GKI'].rank(ascending=False, method='min').astype(int)
+            gki_df['SS Rk'] = gki_df['Shot Stopping'].rank(ascending=False, method='min').astype(int)
+            gki_df['Dist Rk'] = gki_df['Distribution'].rank(ascending=False, method='min').astype(int)
+            gki_df['Swp Rk'] = gki_df['Sweeping'].rank(ascending=False, method='min').astype(int)
+            gki_df['Cmd Rk'] = gki_df['Command'].rank(ascending=False, method='min').astype(int)
             
-            def format_keeper_label(keeper_name):
-                team_name = gki_df.loc[gki_df['Goalkeeper'] == keeper_name, 'Team'].iloc[0]
-                return f"{keeper_name} ({team_name})"
+            gki_df = gki_df.sort_values('Rk').reset_index(drop=True)
+            
+            leader = gki_df.iloc[0]
+            st.markdown(f"### 🥇 League Leader: {leader['Goalkeeper']} ({leader['Team']})")
+            
+            kr_stats_df = gki_df[gki_df['Goalkeeper'].str.contains('Georgsson|Halldór', case=False, na=False)]
+            
+            if not kr_stats_df.empty:
+                kr_stats = kr_stats_df.iloc[0]
+                kr_kpi1, kr_kpi2, kr_kpi3, kr_kpi4 = st.columns(4)
+                kr_kpi1.metric(label="Overall GKI", value=f"{kr_stats['GKI']:.3f}", delta=f"League Rank: #{kr_stats['Rk']}")
+                kr_kpi2.metric(label="Distribution Rating", value=f"{kr_stats['Distribution']:.3f}", delta=f"Rank: #{kr_stats['Dist Rk']}")
+                kr_kpi3.metric(label="Save %", value=f"{kr_stats['Save_Pct']:.1f}%", delta=f"Rank: #{kr_stats['SS Rk']}")
+                kr_kpi4.metric(label="Time Played", value=f"{int(kr_stats['Time Played'])}' mins")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            col_radar, col_scatter = st.columns([1, 1])
+            
+            with col_radar:
+                st.markdown("#### GKI Profile Comparison")
                 
-            target_gk = kr_stats['Goalkeeper'] if not kr_stats_df.empty else leader['Goalkeeper']
-            
-            compare_keeper = st.selectbox(
-                f"Compare {target_gk} to:", 
-                gki_df[gki_df['Goalkeeper'] != target_gk]['Goalkeeper'],
-                format_func=format_keeper_label
-            )
-            
-            base_stats = gki_df[gki_df['Goalkeeper'] == target_gk].iloc[0]
-            comp_stats = gki_df[gki_df['Goalkeeper'] == compare_keeper].iloc[0]
-            
-            categories = ['Shot Stopping', 'Distribution', 'Sweeping', 'Command']
-            
-            fig_gki_radar = go.Figure()
-            fig_gki_radar.add_trace(go.Scatterpolar(
-                r=[base_stats[cat] for cat in categories] + [base_stats[categories[0]]],
-                theta=categories + [categories[0]],
-                fill='toself',
-                name=f"{base_stats['Goalkeeper']} ({base_stats['Team']})",
-                line_color='#00BFFF'
-            ))
-            fig_gki_radar.add_trace(go.Scatterpolar(
-                r=[comp_stats[cat] for cat in categories] + [comp_stats[categories[0]]],
-                theta=categories + [categories[0]],
-                fill='toself',
-                name=f"{comp_stats['Goalkeeper']} ({comp_stats['Team']})",
-                line_color='#FF3333'
-            ))
-            
-            fig_gki_radar.update_layout(
-                polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-                showlegend=True,
-                template="plotly_dark",
-                margin=dict(l=40, r=40, t=40, b=40)
-            )
-            st.plotly_chart(fig_gki_radar, use_container_width=True)
+                def format_keeper_label(keeper_name):
+                    team_name = gki_df.loc[gki_df['Goalkeeper'] == keeper_name, 'Team'].iloc[0]
+                    return f"{keeper_name} ({team_name})"
+                    
+                target_gk = kr_stats['Goalkeeper'] if not kr_stats_df.empty else leader['Goalkeeper']
+                
+                compare_keeper = st.selectbox(
+                    f"Compare {target_gk} to:", 
+                    gki_df[gki_df['Goalkeeper'] != target_gk]['Goalkeeper'],
+                    format_func=format_keeper_label
+                )
+                
+                base_stats = gki_df[gki_df['Goalkeeper'] == target_gk].iloc[0]
+                comp_stats = gki_df[gki_df['Goalkeeper'] == compare_keeper].iloc[0]
+                
+                categories = ['Shot Stopping', 'Distribution', 'Sweeping', 'Command']
+                
+                fig_gki_radar = go.Figure()
+                fig_gki_radar.add_trace(go.Scatterpolar(
+                    r=[base_stats[cat] for cat in categories] + [base_stats[categories[0]]],
+                    theta=categories + [categories[0]],
+                    fill='toself',
+                    name=f"{base_stats['Goalkeeper']} ({base_stats['Team']})",
+                    line_color='#00BFFF'
+                ))
+                fig_gki_radar.add_trace(go.Scatterpolar(
+                    r=[comp_stats[cat] for cat in categories] + [comp_stats[categories[0]]],
+                    theta=categories + [categories[0]],
+                    fill='toself',
+                    name=f"{comp_stats['Goalkeeper']} ({comp_stats['Team']})",
+                    line_color='#FF3333'
+                ))
+                
+                fig_gki_radar.update_layout(
+                    polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+                    showlegend=True,
+                    template="plotly_dark",
+                    margin=dict(l=40, r=40, t=40, b=40)
+                )
+                st.plotly_chart(fig_gki_radar, use_container_width=True)
 
-        with col_scatter:
-            st.markdown("#### Shot Stopping vs. Workload (League)")
-            fig_scatter = px.scatter(
-                gki_df, x="Saves_per_90", y="Save_Pct", 
-                color="Team", text="Player", size="Time Played",
-                title="Save % vs. Saves per 90",
-                labels={"Saves_per_90": "Saves per 90", "Save_Pct": "Save Percentage (%)"},
-                template="plotly_dark"
-            )
-            fig_scatter.update_traces(textposition='top center')
-            fig_scatter.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig_scatter, use_container_width=True)
+            with col_scatter:
+                st.markdown("#### Shot Stopping vs. Workload (League)")
+                fig_scatter = px.scatter(
+                    gki_df, x="Saves_per_90", y="Save_Pct", 
+                    color="Team", text="Player", size="Time Played",
+                    title="Save % vs. Saves per 90",
+                    labels={"Saves_per_90": "Saves per 90", "Save_Pct": "Save Percentage (%)"},
+                    template="plotly_dark"
+                )
+                fig_scatter.update_traces(textposition='top center')
+                fig_scatter.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+                st.plotly_chart(fig_scatter, use_container_width=True)
 
-        st.markdown("---")
-        st.markdown(f"#### 🏆 {selected_season} Besta deild GKI Leaderboard")
-        display_cols = ['Rk', 'Goalkeeper', 'Team', 'GKI', 'SS Rk', 'Shot Stopping', 'Dist Rk', 'Distribution', 'Swp Rk', 'Sweeping', 'Cmd Rk', 'Command']
-        st.dataframe(gki_df[display_cols].style.background_gradient(cmap='viridis', subset=['GKI', 'Shot Stopping', 'Distribution', 'Sweeping', 'Command']), use_container_width=True)
+            st.markdown("---")
+            st.markdown(f"#### 🏆 {selected_season} Besta deild GKI Leaderboard")
+            display_cols = ['Rk', 'Goalkeeper', 'Team', 'GKI', 'SS Rk', 'Shot Stopping', 'Dist Rk', 'Distribution', 'Swp Rk', 'Sweeping', 'Cmd Rk', 'Command']
+            st.dataframe(gki_df[display_cols].style.background_gradient(cmap='viridis', subset=['GKI', 'Shot Stopping', 'Distribution', 'Sweeping', 'Command']), use_container_width=True)
+            
+            st.info("Analyst Note: The GKI Leaderboard is now fully dynamic. It actively parses the Opta CSV totals file dropped in your root directory and automatically calculates the min-max normalized index.")
+
+
+    with tab_custom:
+        st.markdown("### 📊 Custom Interactive Leaderboard")
+        st.markdown("Build your own custom leaderboard by ranking goalkeepers across different metrics. The progress bars let you visually compare two statistics side-by-side.")
+
+        match_df_raw = load_match_data(selected_season)
         
-        st.info("Analyst Note: The GKI Leaderboard is now fully dynamic. It actively parses the Opta CSV totals file dropped in your root directory and automatically calculates the min-max normalized index.")
+        if match_df_raw.empty:
+            st.info(f"Match data file not found for the {selected_season} season. Please ensure 'besta_{selected_season}_goalkeeper_match_data_rounds_X_Y.csv' is in your directory.")
+        else:
+            # Standardize names
+            if 'player' in match_df_raw.columns and 'goalkeeper' not in match_df_raw.columns:
+                match_df_raw['goalkeeper'] = match_df_raw['player']
+            if 'minutes' in match_df_raw.columns and 'minsPlayed' not in match_df_raw.columns:
+                match_df_raw['minsPlayed'] = match_df_raw['minutes']
+                
+            # Safely convert target columns to numeric
+            numeric_cols = ['saves', 'goalsConceded', 'accuratePass', 'accurateKeeperSweeper', 'goodHighClaim', 'ballRecovery', 'minsPlayed']
+            for c in numeric_cols:
+                if c in match_df_raw.columns:
+                    match_df_raw[c] = pd.to_numeric(match_df_raw[c], errors='coerce').fillna(0)
+                else:
+                    match_df_raw[c] = 0
 
+            # Group by goalkeeper to sum their match-by-match metrics
+            agg_df = match_df_raw.groupby(['goalkeeper', 'team'])[numeric_cols].sum().reset_index()
+            agg_df = agg_df.rename(columns={'goalkeeper': 'Goalkeeper', 'team': 'Team'})
+
+            # Filter out keepers who haven't played at least 3 full games (270 mins)
+            agg_df = agg_df[agg_df['minsPlayed'] >= 270].copy()
+
+            # Calculate Advanced Rates
+            agg_df['Save %'] = (agg_df['saves'] / (agg_df['saves'] + agg_df['goalsConceded']) * 100).fillna(0)
+            agg_df['Saves /90'] = (agg_df['saves'] / agg_df['minsPlayed'] * 90).fillna(0)
+            agg_df['Goals Conceded /90'] = (agg_df['goalsConceded'] / agg_df['minsPlayed'] * 90).fillna(0)
+            agg_df['Passes Completed /90'] = (agg_df['accuratePass'] / agg_df['minsPlayed'] * 90).fillna(0)
+            agg_df['Sweeping Actions /90'] = (agg_df['accurateKeeperSweeper'] / agg_df['minsPlayed'] * 90).fillna(0)
+            agg_df['High Claims /90'] = (agg_df['goodHighClaim'] / agg_df['minsPlayed'] * 90).fillna(0)
+            agg_df['Ball Recoveries /90'] = (agg_df['ballRecovery'] / agg_df['minsPlayed'] * 90).fillna(0)
+
+            # Dropdown Selectors
+            metric_options = ['Save %', 'Saves /90', 'Goals Conceded /90', 'Passes Completed /90', 'Sweeping Actions /90', 'High Claims /90', 'Ball Recoveries /90']
+
+            c1, c2 = st.columns(2)
+            primary_metric = c1.selectbox("Primary Ranking Metric (Sorts the table):", metric_options, index=0)
+            secondary_metric = c2.selectbox("Secondary Visual Metric (Side-by-side bar):", metric_options, index=3)
+
+            # Define sorting direction (Lowest is best for Goals Conceded)
+            is_ascending = True if primary_metric == 'Goals Conceded /90' else False
+            agg_df = agg_df.sort_values(primary_metric, ascending=is_ascending).reset_index(drop=True)
+
+            agg_df.insert(0, 'Rank', agg_df.index + 1)
+
+            # Render Visual Dataframe
+            st.dataframe(
+                agg_df[['Rank', 'Goalkeeper', 'Team', 'minsPlayed', primary_metric, secondary_metric]],
+                column_config={
+                    "Goalkeeper": st.column_config.TextColumn("Goalkeeper"),
+                    "Team": st.column_config.TextColumn("Team"),
+                    "minsPlayed": st.column_config.NumberColumn("Minutes Played"),
+                    primary_metric: st.column_config.ProgressColumn(
+                        primary_metric,
+                        help=f"Ranked by {primary_metric}",
+                        format="%.1f",
+                        min_value=0,
+                        max_value=float(agg_df[primary_metric].max())
+                    ),
+                    secondary_metric: st.column_config.ProgressColumn(
+                        secondary_metric,
+                        help=f"Secondary visual comparison: {secondary_metric}",
+                        format="%.1f",
+                        min_value=0,
+                        max_value=float(agg_df[secondary_metric].max())
+                    )
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.info("💡 The dynamic progress bars visualize each goalkeeper's output scaled against the highest performer in the league for that specific category.")
 
 # ==========================================
 # MODE 2: SEASON REPORT
@@ -1567,6 +1656,46 @@ elif report_mode == "Single Match":
         if not valid_passes.empty:
             phase_df = valid_passes.groupby(['Play_State', 'Outcome']).size().reset_index(name='Count')
             st.plotly_chart(px.bar(phase_df, x='Play_State', y='Count', color='Outcome', title="Dead Ball vs Open Play Passing Split", color_discrete_map={'Complete': '#00FF00', 'Incomplete': '#FF3333'}, template="plotly_dark"), width="stretch")
+
+
+    # --- INJECT R2 BENCHMARK HERE ---
+    if "Þór" in opp_name or "Thór" in opp_name:
+        st.markdown("---")
+        st.markdown("## 🏆 Round 2 League Benchmark (Opta)")
+        st.markdown("*League-wide comparison for Round 2 performance.*")
+        
+        def load_r2_benchmark():
+            try:
+                # Ensure the path is strictly resolved to the app's directory just like the CSVs
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                r2_path = os.path.join(current_dir, 'r2_all_keepers_2026.json')
+                
+                with open(r2_path, 'r', encoding='utf-8') as f:
+                    r2_data = json.load(f)
+                rows = []
+                for k in r2_data.get('keepers', []):
+                    summ = k.get('summary', {})
+                    rows.append({
+                        'Goalkeeper': k.get('player'),
+                        'Team': k.get('team'),
+                        'Save %': summ.get('save_pct', 0),
+                        'Pass Acc %': summ.get('pass_accuracy_pct', 0),
+                        'Recoveries': summ.get('ball_recoveries', 0),
+                        'Saves': summ.get('saves', 0)
+                    })
+                df = pd.DataFrame(rows)
+                df['Rk'] = df['Save %'].rank(ascending=False, method='min').astype(int)
+                df = df[['Rk', 'Goalkeeper', 'Team', 'Save %', 'Pass Acc %', 'Recoveries', 'Saves']]
+                df = df.sort_values('Rk').reset_index(drop=True)
+                return df
+            except Exception as e:
+                return pd.DataFrame()
+                
+        r2_df = load_r2_benchmark()
+        if not r2_df.empty:
+            st.dataframe(r2_df.style.background_gradient(cmap='viridis', subset=['Save %', 'Pass Acc %', 'Recoveries', 'Saves']), use_container_width=True)
+        else:
+            st.info("Upload 'r2_all_keepers_2026.json' to the directory to view the Round 2 benchmark.")
 
     st.markdown("---")
     st.markdown("## 📝 Overall Match Analysis")

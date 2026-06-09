@@ -24,35 +24,40 @@ def interpolate_color(color1, color2, factor):
     b = rgb1[2] + (rgb2[2] - rgb1[2]) * factor
     return rgb_to_hex((r, g, b))
 
-# --- AIRTABLE CONFIGURATION FOR COACH'S NOTES ---
-AIRTABLE_PAT = st.secrets.get("AIRTABLE_PAT", "YOUR_PAT_HERE")
-AIRTABLE_BASE_ID = "app5rwHaVPKXC5S7S"
-AIRTABLE_TABLE_NAME = "Coach_Notes"
+# --- GOOGLE DRIVE / LOCAL DIRECTORY CONFIGURATION FOR COACH'S NOTES ---
+def get_notes_file_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Coach_Notes.csv')
 
 def get_saved_notes():
-    if AIRTABLE_PAT.startswith("YOUR_"): return {} 
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
-    headers = {"Authorization": f"Bearer {AIRTABLE_PAT}"}
+    filepath = get_notes_file_path()
+    if not os.path.exists(filepath):
+        return {}
     try:
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            records = response.json().get('records', [])
-            return {rec['fields'].get('Note_ID'): rec['fields'].get('Notes', '') for rec in records if 'Note_ID' in rec['fields']}
+        df = pd.read_csv(filepath, encoding='utf-8-sig')
+        if 'Note_ID' in df.columns and 'Notes' in df.columns:
+            return pd.Series(df['Notes'].values, index=df['Note_ID']).to_dict()
     except Exception:
         pass
     return {}
 
-def save_note_to_airtable(note_id, report_type, period, notes):
-    if AIRTABLE_PAT.startswith("YOUR_"):
-        st.error("Please add your Airtable PAT and Base ID to the top of app.py to save notes!")
+def save_note_to_drive(note_id, report_type, period, notes):
+    filepath = get_notes_file_path()
+    try:
+        if os.path.exists(filepath):
+            df = pd.read_csv(filepath, encoding='utf-8-sig')
+        else:
+            df = pd.DataFrame(columns=["Note_ID", "Report_Type", "Period", "Notes"])
+        
+        if note_id in df['Note_ID'].values:
+            df.loc[df['Note_ID'] == note_id, ['Report_Type', 'Period', 'Notes']] = [report_type, period, notes]
+        else:
+            new_row = pd.DataFrame([{"Note_ID": note_id, "Report_Type": report_type, "Period": period, "Notes": notes}])
+            df = pd.concat([df, new_row], ignore_index=True)
+            
+        df.to_csv(filepath, index=False, encoding='utf-8-sig')
+        return True
+    except Exception as e:
         return False
-    url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
-    headers = {"Authorization": f"Bearer {AIRTABLE_PAT}", "Content-Type": "application/json"}
-    fields = {"Note_ID": note_id, "Report_Type": report_type, "Period": period, "Notes": notes}
-    if report_type == "Single Match": fields["Match_Link"] = [period] 
-    payload = {"performUpsert": {"fieldsToMergeOn": ["Note_ID"]}, "typecast": True, "records": [{"fields": fields}]}
-    response = requests.patch(url, headers=headers, data=json.dumps(payload))
-    return response.status_code == 200
 
 # 1. Page Configuration
 st.set_page_config(page_title="KR Reykjavik | GK Performance", layout="wide")
@@ -63,6 +68,8 @@ st.markdown("""
         .stApp { background-color: #0E1117 !important; color: white !important; }
         header, .st-emotion-cache-1wmy9hl, [data-testid="stSidebar"], button, .stExpander { display: none !important; }
     }
+    
+    /* Force wrapping for Metric Values (Numbers) */
     [data-testid="stMetricValue"] * {
         white-space: normal !important;
         word-break: break-word !important;
@@ -70,6 +77,22 @@ st.markdown("""
         text-overflow: clip !important;
         line-height: 1.2 !important;
         font-size: 1.5rem !important;
+    }
+    
+    /* Force wrapping for Metric Labels (Titles) */
+    [data-testid="stMetricLabel"] * {
+        white-space: normal !important;
+        word-break: break-word !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+    }
+    
+    /* Force wrapping for Metric Deltas (Red/Green Subtext) */
+    [data-testid="stMetricDelta"] * {
+        white-space: normal !important;
+        word-break: break-word !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -472,7 +495,7 @@ if report_mode == "League Benchmark (Opta)":
 # ==========================================
 elif report_mode == "Season Report":
     if season_matches_df.empty or season_actions_df.empty:
-        st.warning(f"No Match Event Data Found for the {selected_season} season yet. Awaiting Opta match-by-match event pipeline integration into Airtable.")
+        st.warning(f"No Match Event Data Found for the {selected_season} season yet. Awaiting Opta match-by-match event pipeline integration into database.")
         st.stop()
         
     report_title = f"{selected_season} Season Report"
@@ -495,9 +518,11 @@ elif report_mode == "Season Report":
     is_shot_mask = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
     is_shot = is_shot_mask & ~agg_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~agg_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
     shots_df = agg_actions[is_shot]
-    total_shots_faced = len(shots_df)
     
     total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False) | shots_df['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
+    
+    # NEW FIX: Calculate true shots faced based on actual goals conceded
+    total_shots_faced = total_saves + total_goals_conceded
     save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
 
     claim_sweep_actions = agg_actions[(agg_actions['Action_Category'] == 'Goal Keeper') & (agg_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Sweeper', case=False, na=False))]
@@ -524,15 +549,15 @@ elif report_mode == "Season Report":
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         col1.metric("Matches Played", total_matches)
         col2.metric("Clean Sheets", clean_sheets)
-        col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
-        col4.metric("Expected Goals Prevented", f"{goals_prevented:+.2f}", delta="Positive Impact" if goals_prevented > 0 else "Underperformed", delta_color="normal" if goals_prevented > 0 else "inverse")
-        col5.metric("PSxG Faced", f"{total_psxg:.2f}")
+        col3.metric(label="Total Saves (Save %)", value=f"{total_saves} ({save_pct:.1f}%)")
+        col4.metric("Expected Goals Prevented", f"{goals_prevented:+.2f}", delta="Positive Impact" if goals_prevented > 0 else "Underperformed", delta_color="normal" if goals_prevented > 0 else "inverse", help="The number may not reflect reality because it depends on data availability which varies.")
+        col5.metric("PSxG Faced", f"{total_psxg:.2f}", help="The number may not reflect reality because it depends on data availability which varies.")
         col6.metric("High Claims/Sweeps", total_high_claims)
     else:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Matches Played", total_matches)
         col2.metric("Clean Sheets", clean_sheets)
-        col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
+        col3.metric(label="Total Saves (Save %)", value=f"{total_saves} ({save_pct:.1f}%)")
         col4.metric("High Claims/Sweeps", total_high_claims)
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -662,8 +687,8 @@ elif report_mode == "Season Report":
     
     with st.form(key=f"form_{note_key}"):
         coach_note = st.text_area("Coach's Summary Notes:", value=saved_notes.get(note_key, ""), height=200)
-        if st.form_submit_button("💾 Save Notes to Airtable"):
-            if save_note_to_airtable(note_key, "Season Report", str(selected_season), coach_note):
+        if st.form_submit_button("💾 Save Notes"):
+            if save_note_to_drive(note_key, "Season Report", str(selected_season), coach_note):
                 st.session_state["saved_notes"][note_key] = coach_note
                 st.success("Notes successfully synced to database!")
             else: st.error("Failed to save notes.")
@@ -673,7 +698,7 @@ elif report_mode == "Season Report":
 # ==========================================
 elif report_mode == "Match Hub (Monthly)":
     if season_matches_df.empty or season_actions_df.empty:
-        st.warning(f"No Match Event Data Found for the {selected_season} season yet. Awaiting Opta match-by-match event pipeline integration into Airtable.")
+        st.warning(f"No Match Event Data Found for the {selected_season} season yet. Awaiting Opta match-by-match event pipeline integration into database.")
         st.stop()
         
     st.sidebar.subheader("Select Month")
@@ -706,9 +731,11 @@ elif report_mode == "Match Hub (Monthly)":
     is_shot_mask = agg_actions['Outcome'].astype(str).str.contains('Shot|Goal', case=False, na=False) | agg_actions['Action_Category'].astype(str).str.contains('Save|Goal|Miss', case=False, na=False) | (agg_actions['PSxG'].notna() if has_psxg else False)
     is_shot = is_shot_mask & ~agg_actions['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|Goal Keeper|Goalkeeper', case=False, na=False) & ~agg_actions['Outcome'].astype(str).str.contains('GoalKick|Goal Kick', case=False, na=False)
     shots_df = agg_actions[is_shot]
-    total_shots_faced = len(shots_df)
     
     total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False) | shots_df['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
+    
+    # NEW FIX: Calculate true shots faced based on actual goals conceded
+    total_shots_faced = total_saves + total_goals_conceded
     save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
 
     claim_sweep_actions = agg_actions[(agg_actions['Action_Category'] == 'Goal Keeper') & (agg_actions['Outcome'].astype(str).str.contains('Claim|Punch|Clearance|Sweeper', case=False, na=False))]
@@ -735,15 +762,15 @@ elif report_mode == "Match Hub (Monthly)":
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         col1.metric("Matches Played", total_matches)
         col2.metric("Clean Sheets", clean_sheets)
-        col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
-        col4.metric("Expected Goals Prevented", f"{goals_prevented:+.2f}", delta="Positive Impact" if goals_prevented > 0 else "Underperformed", delta_color="normal" if goals_prevented > 0 else "inverse")
-        col5.metric("PSxG Faced", f"{total_psxg:.2f}")
+        col3.metric(label="Total Saves (Save %)", value=f"{total_saves} ({save_pct:.1f}%)")
+        col4.metric("Expected Goals Prevented", f"{goals_prevented:+.2f}", delta="Positive Impact" if goals_prevented > 0 else "Underperformed", delta_color="normal" if goals_prevented > 0 else "inverse", help="The number may not reflect reality because it depends on data availability which varies.")
+        col5.metric("PSxG Faced", f"{total_psxg:.2f}", help="The number may not reflect reality because it depends on data availability which varies.")
         col6.metric("High Claims/Sweeps", total_high_claims)
     else:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Matches Played", total_matches)
         col2.metric("Clean Sheets", clean_sheets)
-        col3.metric("Total Saves", total_saves, delta=f"{save_pct:.1f}% Save Pct", delta_color="off")
+        col3.metric(label="Total Saves (Save %)", value=f"{total_saves} ({save_pct:.1f}%)")
         col4.metric("High Claims/Sweeps", total_high_claims)
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -892,8 +919,8 @@ elif report_mode == "Match Hub (Monthly)":
     
     with st.form(key=f"form_{note_key}"):
         coach_note = st.text_area("Coach's Summary Notes:", value=saved_notes.get(note_key, ""), height=200)
-        if st.form_submit_button("💾 Save Notes to Airtable"):
-            if save_note_to_airtable(note_key, "Monthly Report", str(selected_period), coach_note):
+        if st.form_submit_button("💾 Save Notes"):
+            if save_note_to_drive(note_key, "Monthly Report", str(selected_period), coach_note):
                 st.session_state["saved_notes"][note_key] = coach_note
                 st.success("Notes successfully synced to database!")
             else: st.error("Failed to save notes.")
@@ -903,7 +930,7 @@ elif report_mode == "Match Hub (Monthly)":
 # ==========================================
 elif report_mode == "Single Match":
     if season_matches_df.empty or season_actions_df.empty:
-        st.warning(f"No Single Match Event Data Found for the {selected_season} season. Awaiting Opta match-by-match event pipeline integration into Airtable.")
+        st.warning(f"No Single Match Event Data Found for the {selected_season} season. Awaiting Opta match-by-match event pipeline integration into database.")
         st.stop()
         
     def format_match_label(match_id):
@@ -988,17 +1015,21 @@ elif report_mode == "Single Match":
     total_goals = int(pd.to_numeric(match_info.get('Opponent_Score', 0), errors='coerce'))
     total_saves = len(valid_shots[valid_shots['Outcome'].astype(str).str.contains('Save', case=False, na=False) | valid_shots['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
 
+    # NEW FIX: Calculate true shots faced based on actual goals conceded
+    true_shots_faced = total_saves + total_goals
+    save_pct = (total_saves / true_shots_faced * 100) if true_shots_faced > 0 else 0
+
     if has_psxg:
         goals_prevented = total_psxg - total_goals
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        kpi1.metric(label="Total Shots Faced", value=len(valid_shots))
-        kpi2.metric(label="Total PSxG Faced", value=f"{total_psxg:.2f}")
+        kpi1.metric(label="Total Shots Faced", value=int(true_shots_faced))
+        kpi2.metric(label="Total PSxG Faced", value=f"{total_psxg:.2f}", help="The number may not reflect reality because it depends on data availability which varies.")
         kpi3.metric(label="Goals Conceded", value=int(total_goals))
-        kpi4.metric(label="Goals Prevented", value=f"{goals_prevented:+.2f}", delta="Shot Stopping Impact" if goals_prevented >= 0 else "Underperformed Expected", delta_color="normal" if goals_prevented >= 0 else "inverse")
+        kpi4.metric(label="Goals Prevented", value=f"{goals_prevented:+.2f}", delta="Shot Stopping Impact" if goals_prevented >= 0 else "Underperformed Expected", delta_color="normal" if goals_prevented >= 0 else "inverse", help="The number may not reflect reality because it depends on data availability which varies.")
     else:
         kpi1, kpi2, kpi3 = st.columns(3)
-        kpi1.metric(label="Total Shots Faced", value=len(valid_shots))
-        kpi2.metric(label="Total Saves", value=total_saves)
+        kpi1.metric(label="Total Shots Faced", value=int(true_shots_faced))
+        kpi2.metric(label="Total Saves (Save %)", value=f"{total_saves} ({save_pct:.1f}%)")
         kpi3.metric(label="Goals Conceded", value=int(total_goals))
 
     shot_pitch, shot_video = st.columns([2.5, 1.5]) 
@@ -1207,7 +1238,7 @@ elif report_mode == "Single Match":
                 mc1.metric("Minute", f"{sel_minute}'")
                 mc2.metric("Outcome", sel_outcome if "Shot" in sel_outcome else sel_cat)
                 mc3, mc4 = st.columns(2)
-                mc3.metric("PSxG", sel_psxg_str)
+                mc3.metric("PSxG", sel_psxg_str, help="The number may not reflect reality because it depends on data availability which varies.")
                 mc4.metric("Distance", sel_dist_str)
             else:
                 mc1, mc2, mc3 = st.columns(3)
@@ -1712,13 +1743,13 @@ elif report_mode == "Single Match":
     
     with st.form(key=f"form_{note_key}"):
         coach_note = st.text_area("Coach's Summary Notes:", value=existing_note, height=200, placeholder="Log your post-match training focus areas here...")
-        submit_btn = st.form_submit_button("💾 Save Notes to Airtable")
+        submit_btn = st.form_submit_button("💾 Save Notes")
         if submit_btn:
-            if save_note_to_airtable(note_key, "Single Match", str(selected_match), coach_note):
+            if save_note_to_drive(note_key, "Single Match", str(selected_match), coach_note):
                 st.session_state["saved_notes"][note_key] = coach_note
                 st.success("Notes successfully synced to database!")
             else:
-                st.error("Failed to save notes. Check your Airtable credentials.")
+                st.error("Failed to save notes.")
 
 # ==========================================
 # EXPORT REPORT BUTTONS

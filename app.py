@@ -521,7 +521,7 @@ elif report_mode == "Season Report":
     
     total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False) | shots_df['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
     
-    # NEW FIX: Calculate true shots faced based on actual goals conceded
+    # Calculate true shots faced based on actual goals conceded
     total_shots_faced = total_saves + total_goals_conceded
     save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
 
@@ -734,7 +734,7 @@ elif report_mode == "Match Hub (Monthly)":
     
     total_saves = len(shots_df[shots_df['Outcome'].astype(str).str.contains('Save', case=False, na=False) | shots_df['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
     
-    # NEW FIX: Calculate true shots faced based on actual goals conceded
+    # Calculate true shots faced based on actual goals conceded
     total_shots_faced = total_saves + total_goals_conceded
     save_pct = (total_saves / total_shots_faced * 100) if total_shots_faced > 0 else 0
 
@@ -1015,7 +1015,7 @@ elif report_mode == "Single Match":
     total_goals = int(pd.to_numeric(match_info.get('Opponent_Score', 0), errors='coerce'))
     total_saves = len(valid_shots[valid_shots['Outcome'].astype(str).str.contains('Save', case=False, na=False) | valid_shots['Action_Category'].astype(str).str.contains('Save', case=False, na=False)])
 
-    # NEW FIX: Calculate true shots faced based on actual goals conceded
+    # Calculate true shots faced based on actual goals conceded
     true_shots_faced = total_saves + total_goals
     save_pct = (total_saves / true_shots_faced * 100) if true_shots_faced > 0 else 0
 
@@ -1073,6 +1073,15 @@ elif report_mode == "Single Match":
             start_y = pd.to_numeric(row.get('Pass_Start_Y'), errors='coerce')
             end_x = pd.to_numeric(row.get('Pass_End_X'), errors='coerce')
             end_y = pd.to_numeric(row.get('Pass_End_Y'), errors='coerce')
+
+            # Convert Set Piece Faced into a dot at the reception/shot point
+            if str(row.get('Action_Category', '')) == 'Set Piece Faced':
+                if pd.notna(end_x) and pd.notna(end_y):
+                    start_x = end_x
+                    start_y = end_y
+                else:
+                    end_x = start_x
+                    end_y = start_y
 
             if pd.isna(start_x): start_x = 0
             if pd.isna(start_y): start_y = 0

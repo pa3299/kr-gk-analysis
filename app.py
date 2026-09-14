@@ -137,8 +137,13 @@ def load_data():
     matches_df['Month_Year'] = matches_df['Date_Parsed'].dt.strftime('%B %Y').fillna('Unknown Month')
     matches_df['Season'] = matches_df['Date_Parsed'].dt.strftime('%Y').fillna('Unknown Season')
     if 'Venue' not in matches_df.columns: matches_df['Venue'] = 'Home'
+    
+    # BULLETPROOF FIX: Unify Match IDs to ignore accents and whitespace mismatches
+    matches_df['Match_ID'] = matches_df['Match_ID'].astype(str).str.replace('í', 'i').str.replace('Í', 'I').str.strip()
         
     if not actions_df.empty:
+        actions_df['Match_ID'] = actions_df['Match_ID'].astype(str).str.replace('í', 'i').str.replace('Í', 'I').str.strip()
+        
         def categorize_pass(row):
             if str(row.get('Action_Category')) != 'Pass': return row.get('Tactical_Bucket')
             x = pd.to_numeric(row.get('Pass_End_X'), errors='coerce')
@@ -625,6 +630,39 @@ elif report_mode == "Season Report":
 
     st.markdown("---")
     st.markdown("### Profile Breakdowns")
+    
+    # Load Official Team Summary for Set Piece vs Open Play xG
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    summary_files = [f for f in os.listdir(current_dir) if f.startswith(f'besta_{selected_season}_set_piece_team_summary') and f.endswith('.csv')]
+    summary_files.sort()
+    df_summary = pd.read_csv(os.path.join(current_dir, summary_files[-1]), encoding='utf-8-sig') if summary_files else pd.DataFrame()
+    
+    if not df_summary.empty:
+        # Filter for games where opponent is KR (meaning KR is defending) for the whole season
+        kr_defending = df_summary[df_summary['opponent'] == 'KR']
+            
+        if not kr_defending.empty:
+            total_sp_xg = kr_defending['official_team_setplay_xg'].sum()
+            total_op_xg = kr_defending['official_team_openplay_xg'].sum()
+            total_xg = kr_defending['official_team_xg'].sum()
+            penalty_xg = total_xg - (total_sp_xg + total_op_xg)
+            if penalty_xg < 0.01: penalty_xg = 0
+            
+            st.markdown("#### Official Expected Goals (xG) Conceded Breakdown")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Open Play xG Faced", f"{total_op_xg:.2f}")
+            c2.metric("Total Set Play xG Faced", f"{total_sp_xg:.2f}")
+            if penalty_xg > 0: c3.metric("Penalty xG Faced", f"{penalty_xg:.2f}")
+            
+            pie_data = pd.DataFrame({
+                'Phase': ['Open Play', 'Set Play', 'Penalty'],
+                'xG': [total_op_xg, total_sp_xg, penalty_xg]
+            })
+            pie_data = pie_data[pie_data['xG'] > 0]
+            
+            fig_xg_pie = px.pie(pie_data, names='Phase', values='xG', title="xG Conceded by Phase of Play (Official Opta)", template='plotly_dark', hole=0.4, color_discrete_sequence=['#00BFFF', '#B0008E', '#FFEA00'])
+            st.plotly_chart(fig_xg_pie, use_container_width=True)
+
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
@@ -857,6 +895,42 @@ elif report_mode == "Match Hub (Monthly)":
 
     st.markdown("---")
     st.markdown("### Profile Breakdowns")
+    
+    # Load Official Team Summary for Set Piece vs Open Play xG
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    summary_files = [f for f in os.listdir(current_dir) if f.startswith(f'besta_{selected_season}_set_piece_team_summary') and f.endswith('.csv')]
+    summary_files.sort()
+    df_summary = pd.read_csv(os.path.join(current_dir, summary_files[-1]), encoding='utf-8-sig') if summary_files else pd.DataFrame()
+    
+    if not df_summary.empty:
+        # Filter for games where opponent is KR (meaning KR is defending) for this specific month
+        kr_defending = df_summary[df_summary['opponent'] == 'KR'].copy()
+        kr_defending['date_parsed'] = pd.to_datetime(kr_defending['date'], errors='coerce')
+        kr_defending['Month_Year'] = kr_defending['date_parsed'].dt.strftime('%B %Y')
+        kr_defending = kr_defending[kr_defending['Month_Year'] == selected_period]
+            
+        if not kr_defending.empty:
+            total_sp_xg = kr_defending['official_team_setplay_xg'].sum()
+            total_op_xg = kr_defending['official_team_openplay_xg'].sum()
+            total_xg = kr_defending['official_team_xg'].sum()
+            penalty_xg = total_xg - (total_sp_xg + total_op_xg)
+            if penalty_xg < 0.01: penalty_xg = 0
+            
+            st.markdown("#### Official Expected Goals (xG) Conceded Breakdown")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Open Play xG Faced", f"{total_op_xg:.2f}")
+            c2.metric("Total Set Play xG Faced", f"{total_sp_xg:.2f}")
+            if penalty_xg > 0: c3.metric("Penalty xG Faced", f"{penalty_xg:.2f}")
+            
+            pie_data = pd.DataFrame({
+                'Phase': ['Open Play', 'Set Play', 'Penalty'],
+                'xG': [total_op_xg, total_sp_xg, penalty_xg]
+            })
+            pie_data = pie_data[pie_data['xG'] > 0]
+            
+            fig_xg_pie = px.pie(pie_data, names='Phase', values='xG', title="xG Conceded by Phase of Play (Official Opta)", template='plotly_dark', hole=0.4, color_discrete_sequence=['#00BFFF', '#B0008E', '#FFEA00'])
+            st.plotly_chart(fig_xg_pie, use_container_width=True)
+
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
@@ -1019,13 +1093,42 @@ elif report_mode == "Single Match":
     true_shots_faced = total_saves + total_goals
     save_pct = (total_saves / true_shots_faced * 100) if true_shots_faced > 0 else 0
 
-    if has_psxg:
+    # Load Advanced xG/xGOT from match_data
+    match_data_df = load_match_data(selected_season)
+    adv_xg, adv_xgot, adv_goals, adv_prev = None, None, None, None
+    if not match_data_df.empty:
+        # Find row for KR and this date/opponent
+        date_str = match_info.get('Date', '')
+        row_mask = (match_data_df['date'] == date_str) & (match_data_df['team'] == 'KR')
+        if row_mask.any():
+            adv_row = match_data_df[row_mask].iloc[0]
+            adv_xg = pd.to_numeric(adv_row.get('expectedGoalsConceded'), errors='coerce')
+            adv_xgot = pd.to_numeric(adv_row.get('expectedGoalsontargetConceded'), errors='coerce')
+            adv_goals = pd.to_numeric(adv_row.get('goalsConceded'), errors='coerce')
+            adv_prev = pd.to_numeric(adv_row.get('derived_xgot_minus_non_own_goals_conceded'), errors='coerce')
+
+    if pd.notna(adv_xg) and pd.notna(adv_xgot):
+        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+        kpi1.metric("Total Shots Faced", int(true_shots_faced))
+        kpi2.metric("xG Faced (Raw)", f"{adv_xg:.2f}")
+        kpi3.metric("xGOT Faced (Post-Shot)", f"{adv_xgot:.2f}", help="Expected Goals on Target (Quality of the shot after hit)")
+        kpi4.metric("Goals Conceded", int(adv_goals if pd.notna(adv_goals) else total_goals))
+        kpi5.metric("Goals Prevented", f"{adv_prev:+.2f}", delta="Positive Impact" if adv_prev >= 0 else "Underperformed", delta_color="normal" if adv_prev >= 0 else "inverse", help="derived_xgot_minus_non_own_goals_conceded")
+        
+        st.markdown("#### xG vs xGOT (Shot Quality Progression)")
+        xg_fig = go.Figure()
+        xg_fig.add_trace(go.Bar(name="Expected Goals (xG)", x=["Metrics"], y=[adv_xg], marker_color='#B0008E'))
+        xg_fig.add_trace(go.Bar(name="Expected Goals on Target (xGOT)", x=["Metrics"], y=[adv_xgot], marker_color='#00BFFF'))
+        xg_fig.add_trace(go.Bar(name="Actual Goals Conceded", x=["Metrics"], y=[adv_goals], marker_color='red'))
+        xg_fig.update_layout(barmode='group', template='plotly_dark', height=250, margin=dict(l=0,r=0,t=30,b=0))
+        st.plotly_chart(xg_fig, use_container_width=True)
+    elif has_psxg:
         goals_prevented = total_psxg - total_goals
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         kpi1.metric(label="Total Shots Faced", value=int(true_shots_faced))
-        kpi2.metric(label="Total PSxG Faced", value=f"{total_psxg:.2f}", help="The number may not reflect reality because it depends on data availability which varies.")
+        kpi2.metric(label="Total PSxG Faced", value=f"{total_psxg:.2f}")
         kpi3.metric(label="Goals Conceded", value=int(total_goals))
-        kpi4.metric(label="Goals Prevented", value=f"{goals_prevented:+.2f}", delta="Shot Stopping Impact" if goals_prevented >= 0 else "Underperformed Expected", delta_color="normal" if goals_prevented >= 0 else "inverse", help="The number may not reflect reality because it depends on data availability which varies.")
+        kpi4.metric(label="Goals Prevented", value=f"{goals_prevented:+.2f}", delta="Shot Stopping Impact" if goals_prevented >= 0 else "Underperformed Expected", delta_color="normal" if goals_prevented >= 0 else "inverse")
     else:
         kpi1, kpi2, kpi3 = st.columns(3)
         kpi1.metric(label="Total Shots Faced", value=int(true_shots_faced))
@@ -1357,9 +1460,22 @@ elif report_mode == "Single Match":
     st.markdown("---")
     st.markdown("## 🚩 Set Pieces Faced")
 
-    match_set_pieces = match_all_actions[match_all_actions['Action_Category'] == 'Set Piece Faced'].copy()
-    valid_set_pieces = match_set_pieces.dropna(subset=['Pass_Start_X', 'Pass_Start_Y', 'Pass_End_X', 'Pass_End_Y']).copy()
+    match_set_pieces = match_all_actions[(match_all_actions['Action_Category'] == 'Set Piece Faced') & (~match_all_actions['Play_Pattern'].astype(str).str.contains('Goal Kick|GoalKick|Keeper Throw|KeeperThrow', case=False, na=False))].copy()
+    valid_set_pieces = match_set_pieces.dropna(subset=['Pass_Start_X', 'Pass_Start_Y']).copy()
     valid_set_pieces.reset_index(drop=True, inplace=True)
+    
+    # Load advanced linked shots
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    linked_files = [f for f in os.listdir(current_dir) if f.startswith(f'besta_{selected_season}_set_piece_linked_shots') and f.endswith('.csv')]
+    linked_files.sort()
+    df_linked = pd.read_csv(os.path.join(current_dir, linked_files[-1]), encoding='utf-8-sig') if linked_files else pd.DataFrame()
+    
+    if not df_linked.empty:
+        date_str = match_info.get('Date', '')
+        kr_linked = df_linked[(df_linked['opponent'] == 'KR') & (df_linked['date'] == date_str)].copy()
+        kr_linked.reset_index(drop=True, inplace=True)
+    else:
+        kr_linked = pd.DataFrame()
 
     sp_total = len(valid_set_pieces)
     sp_corners = len(valid_set_pieces[valid_set_pieces['Play_Pattern'] == 'Corner'])
@@ -1425,6 +1541,10 @@ elif report_mode == "Single Match":
             x1 = pd.to_numeric(row.get('Pass_End_X'), errors='coerce')
             y1 = pd.to_numeric(row.get('Pass_End_Y'), errors='coerce')
 
+            if pd.isna(x0) or pd.isna(y0): continue
+            if pd.isna(x1) or pd.isna(y1): 
+                x1, y1 = x0, y0
+
             # Standardize direction so KR is defending the goal at x=0
             if x0 < 60:
                  x0 = 120 - x0
@@ -1456,6 +1576,41 @@ elif report_mode == "Single Match":
 
         fig_sp.update_layout(xaxis=dict(range=[-5, 125], showgrid=False, zeroline=False, visible=False), yaxis=dict(range=[-5, 85], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1), height=550, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', clickmode='event+select')
         st.plotly_chart(fig_sp, width="stretch", on_select="rerun", selection_mode="points", key="sp_chart")
+        
+        if not kr_linked.empty:
+            st.markdown("#### True Set-Piece Dashboard (Rebounds & Multi-Phase)")
+            st.info("Visualizes every phase of play up to 20 seconds after the restart to track rebounds and parrying tendencies.")
+            fig_rebound = go.Figure()
+            fig_rebound.add_shape(type="rect", x0=0, y0=0, x1=60, y1=80, line=dict(color="white", width=2))
+            fig_rebound.add_shape(type="rect", x0=0, y0=18, x1=18, y1=62, line=dict(color="white", width=2))
+            fig_rebound.add_shape(type="rect", x0=0, y0=30, x1=6, y1=50, line=dict(color="white", width=2))
+            fig_rebound.add_shape(type="circle", x0=50, y0=30, x1=70, y1=50, line=dict(color="white", width=2))
+            
+            for ri, rrow in kr_linked.iterrows():
+                bx = pd.to_numeric(rrow.get('shot_x'), errors='coerce')
+                by = pd.to_numeric(rrow.get('shot_y'), errors='coerce')
+                if pd.notna(bx) and pd.notna(by):
+                    if bx > 60:
+                        bx = 120 - bx
+                        by = 80 - by
+                    
+                    time_diff = pd.to_numeric(rrow.get('seconds_to_shot'), errors='coerce')
+                    is_rebound = pd.notna(time_diff) and time_diff > 0
+                    
+                    hover_text = f"Minute: {rrow.get('shot_clock')}<br>Type: {rrow.get('set_piece_type')}<br>Outcome: {rrow.get('shot_outcome')}<br>xG: {rrow.get('shot_xg')}<br>Seconds after restart: {time_diff}"
+                    color = '#FF5500' if is_rebound else '#00BFFF'
+                    size = 12 if is_rebound else 8
+                    
+                    fig_rebound.add_trace(go.Scatter(
+                        x=[bx], y=[by], mode='markers+text',
+                        marker=dict(size=size, color=color, line=dict(color='white', width=1)),
+                        text=["R" if is_rebound else "S"],
+                        textfont=dict(color="white", size=9),
+                        hoverinfo='text', hovertext=hover_text, showlegend=False
+                    ))
+            
+            fig_rebound.update_layout(xaxis=dict(range=[-5, 65], visible=False), yaxis=dict(range=[-5, 85], visible=False, scaleanchor="x"), height=400, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_rebound, use_container_width=True)
 
     with sp_video:
         st.markdown("### Set Piece Context")
@@ -1488,8 +1643,18 @@ elif report_mode == "Single Match":
     st.markdown("---")
     st.markdown("## 👟 Distribution & Passing")
     
-    valid_passes['Is_Dead_Ball'] = valid_passes['Play_Pattern'].astype(str).str.contains('Goal Kick|Free Kick|Corner|Penalty', case=False)
+    valid_passes['Is_Dead_Ball'] = valid_passes['Play_Pattern'].astype(str).str.contains('Goal Kick|Free Kick|Corner|Penalty|Keeper Throw', case=False)
     valid_passes['Play_State'] = valid_passes['Is_Dead_Ball'].map({True: 'Dead Ball', False: 'Open Play'})
+    
+    st.markdown("#### Distribution Type Filter")
+    pass_filter = st.radio("Select Pass Type to Visualize:", ["All Passes", "Goal Kicks & Keeper Throws (Direct Distribution)", "Open Play Only"], horizontal=True)
+    
+    if pass_filter == "Goal Kicks & Keeper Throws (Direct Distribution)":
+        display_passes = valid_passes[valid_passes['Action_Category'].astype(str).str.contains('GoalKick|Goal Kick|KeeperThrow|Keeper Throw', case=False, na=False) | valid_passes['Play_Pattern'].astype(str).str.contains('Goal Kick|Keeper Throw', case=False, na=False)]
+    elif pass_filter == "Open Play Only":
+        display_passes = valid_passes[valid_passes['Play_State'] == 'Open Play']
+    else:
+        display_passes = valid_passes
     
     # Calculate KPIs from ALL passes (including Ólafsson's synthetic ones)
     total_passes = len(match_passes)
@@ -1544,7 +1709,7 @@ elif report_mode == "Single Match":
             if bucket == 'Short / Retain': return '#FFFFFF'
             return '#FFFFFF'
 
-        for i, row in valid_passes.iterrows():
+        for i, row in display_passes.iterrows():
             is_active = (selected_pass_idx == i)
             base_color = '#00FF00' if row['Outcome'] == 'Complete' else '#FF3333'
             tip_color = get_intent_color(row['Tactical_Bucket'])
@@ -1560,7 +1725,9 @@ elif report_mode == "Single Match":
             x1 = pd.to_numeric(row.get('Pass_End_X'), errors='coerce')
             y1 = pd.to_numeric(row.get('Pass_End_Y'), errors='coerce')
 
-            if pd.isna(x0) or pd.isna(y0) or pd.isna(x1) or pd.isna(y1): continue
+            if pd.isna(x0) or pd.isna(y0): continue
+            if pd.isna(x1) or pd.isna(y1): 
+                x1, y1 = x0, y0
 
             num_segments = 15
             for step in range(num_segments):
